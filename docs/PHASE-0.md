@@ -52,12 +52,18 @@ built. Capture and swap-chain presentation are well-trodden with plenty of
 C# precedent; the Media Foundation pipeline is the actual unknown. Prove
 that first.
 
-**Step 0 -- enumerate the MFTs.** A ~50-line console program calling
-`MFTEnumEx` for hardware H.264 encoders and decoders, printing what comes
-back. Answers two questions in an afternoon: does this GPU expose what we
-assume, and does `Vortice.MediaFoundation` actually surface the APIs
-needed to drive it? Binding coverage varies, and a gap found here costs an
-afternoon instead of three weeks.
+**Step 0 -- enumerate the MFTs. Written, not yet run on real hardware.**
+`RemoteControl.Codec`'s `MftProbe`, invoked by `tools/LoopbackHarness`:
+calls `MFTEnumEx` for hardware and software H.264 encoders and decoders
+and prints what comes back, then states a pass/incomplete verdict. Answers
+two questions in an afternoon: does this GPU expose what we assume, and
+does `Vortice.MediaFoundation` actually surface the APIs needed to drive
+it? Binding coverage varies, and a gap found here costs an afternoon
+instead of three weeks.
+
+It enumerates only -- it never activates or configures a transform, so a
+pass means the pieces are *present*, not that they can be driven. That
+is Step 1's job.
 
 **Step 1 -- codec against a synthetic source.** Feed a hand-made D3D11
 texture (solid colour, or a moving rectangle so successive frames differ)
