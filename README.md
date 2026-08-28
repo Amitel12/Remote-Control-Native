@@ -53,10 +53,52 @@ cross-platform even just for compiling. Every other project targets
 Windows API surface ships as reference assemblies), it just can't *run*
 off Windows.
 
+On Windows, this builds all 12 projects and runs the tests:
+
 ```
-dotnet build                          # everything except RemoteControl.App
-dotnet test                           # RemoteControl.Net.Tests + RemoteControl.Protocol.Tests
+dotnet build RemoteControl.sln
+dotnet test RemoteControl.sln
 ```
 
-On Windows, `dotnet build RemoteControl.sln` builds all 12 projects
-including `RemoteControl.App`.
+Note that a bare `dotnet build` resolves to `RemoteControl.sln` too, since
+that's the only solution in the root -- so it is *not* a way to skip the
+WPF app. Off Windows, exclude that one project explicitly:
+
+```
+find src tools tests -name '*.csproj' ! -name 'RemoteControl.App.csproj' \
+  -exec dotnet build {} \;
+dotnet test tests/RemoteControl.Net.Tests/RemoteControl.Net.Tests.csproj
+dotnet test tests/RemoteControl.Protocol.Tests/RemoteControl.Protocol.Tests.csproj
+```
+
+## Running
+
+The Windows projects pin `<Platforms>x64</Platforms>`, so the build output
+lands under an `x64` path rather than the default one:
+
+```
+.\src\RemoteControl.App\bin\x64\Debug\net8.0-windows\RemoteControl.App.exe
+```
+
+`dotnet run --project src\RemoteControl.App` needs the platform passed
+explicitly to match, i.e. `-p:Platform=x64`.
+
+What you get today is the placeholder shell described under Status -- a
+window and nothing behind it. The pipeline work happens in
+`tools/LoopbackHarness` first; see `docs/ARCHITECTURE.md`.
+
+## CI
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) builds the full
+solution and runs the tests on Windows, and builds everything except the
+WPF app on Linux. Two of its steps exist because of specific bugs that
+reached `main`:
+
+- **XML validation** -- `--` is illegal inside an XML comment body. In a
+  `.xaml` file that fails the build loudly, but in `app.manifest` it does
+  not: `mt.exe` embeds the malformed manifest as-is and the app dies at
+  launch with "side-by-side configuration is incorrect". Parsing every XML
+  input catches both.
+- **Launch smoke test** -- the only check that can catch a corrupt embedded
+  manifest, since that failure mode builds clean and only shows up when the
+  exe actually starts.
