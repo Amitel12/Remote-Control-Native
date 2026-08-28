@@ -11,7 +11,7 @@
         this shell.
     -->
     <Grid>
-        <TextBlock Text="Remote Control — native rewrite in progress"
+        <TextBlock Text="Remote Control -- native rewrite in progress"
                    HorizontalAlignment="Center" VerticalAlignment="Center"
                    FontSize="16" />
     </Grid>
