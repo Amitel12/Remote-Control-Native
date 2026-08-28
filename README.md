@@ -87,18 +87,22 @@ What you get today is the placeholder shell described under Status -- a
 window and nothing behind it. The pipeline work happens in
 `tools/LoopbackHarness` first; see `docs/ARCHITECTURE.md`.
 
-## CI
+## Gotchas
 
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml) builds the full
-solution and runs the tests on Windows, and builds everything except the
-WPF app on Linux. Two of its steps exist because of specific bugs that
-reached `main`:
+**Never write `--` inside an XML comment.** It is illegal in XML, and both
+`.xaml` and `app.manifest` have been broken by it once already. The two
+failure modes look nothing alike:
 
-- **XML validation** -- `--` is illegal inside an XML comment body. In a
-  `.xaml` file that fails the build loudly, but in `app.manifest` it does
-  not: `mt.exe` embeds the malformed manifest as-is and the app dies at
-  launch with "side-by-side configuration is incorrect". Parsing every XML
-  input catches both.
-- **Launch smoke test** -- the only check that can catch a corrupt embedded
-  manifest, since that failure mode builds clean and only shows up when the
-  exe actually starts.
+- In a `.xaml` file it fails the build loudly, with `error MC3000`.
+- In `app.manifest` it does *not* fail the build. `mt.exe` embeds the
+  malformed manifest as-is, and the exe then dies at launch with "the
+  application has failed to start because its side-by-side configuration
+  is incorrect" -- an error that points nowhere near the actual cause.
+
+Since the second one builds clean, the only way to catch it is to launch
+the app. Worth doing after touching the manifest.
+
+There is no CI, so nothing checks this automatically. `RemoteControl.App`
+in particular is only ever compiled by whoever builds on Windows -- which
+is how both bugs above reached `main` from a machine that could not build
+it.
