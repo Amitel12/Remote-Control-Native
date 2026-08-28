@@ -322,8 +322,17 @@ real hardware" become an excuse to skip testing the parts that don't.
 
 ## Next step
 
-Phase 0 above: on a real Windows machine with a real GPU, clone this
-repo and start implementing `RemoteControl.Capture`'s `DesktopDuplicator`
-and `DisplayEnumerator`, `RemoteControl.Codec`'s `HardwareEncoder`/
-`HardwareDecoder`, and `RemoteControl.Render`'s `SwapChainPresenter`,
-wiring them into `tools/LoopbackHarness`.
+Phase 0 above: on a real Windows machine with a real GPU, implement
+`RemoteControl.Capture`'s `DesktopDuplicator` and `DisplayEnumerator`,
+`RemoteControl.Codec`'s `HardwareEncoder`/`HardwareDecoder`, and
+`RemoteControl.Render`'s `SwapChainPresenter`, wiring them into
+`tools/LoopbackHarness`.
+
+See [`PHASE-0.md`](PHASE-0.md) for the working plan: it deliberately
+builds them in a different order than that sentence lists (codec first,
+against a synthetic source, since the Media Foundation pipeline is the
+one genuine unknown and capture-first defers the gate's answer until
+everything else exists), splits the exit criteria into the two separate
+questions they actually are, and records the landmines -- including a
+BGRA -> NV12 conversion step that this document omits and that must stay
+GPU-side or the zero-copy property this phase exists to prove is lost.

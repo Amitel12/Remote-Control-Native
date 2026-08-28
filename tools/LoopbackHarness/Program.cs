@@ -9,10 +9,13 @@ namespace RemoteControl.Tools.LoopbackHarness;
 /// measure whether the pipeline sustains 60fps 1080p with zero CPU-side
 /// texture copies. This is currently a stub -- the actual DesktopDuplicator/
 /// HardwareEncoder/HardwareDecoder/SwapChainPresenter classes it will call
-/// into don't exist yet (see each project's own class-library scaffold);
-/// writing and validating them against real GPU hardware is the next
-/// concrete step, and can only happen on a real Windows dev machine, not in
-/// this repo's Linux-sandboxed scaffolding pass.
+/// into don't exist yet (those projects contain no source files at all yet,
+/// only their .csproj); writing and validating them against real GPU
+/// hardware is the next concrete step, and can only happen on a real Windows
+/// dev machine, not in this repo's Linux-sandboxed scaffolding pass.
+///
+/// See docs/PHASE-0.md for the working plan -- build order, exit criteria,
+/// and the known Media Foundation landmines to expect.
 /// </summary>
 internal static class Program
 {
@@ -20,7 +23,7 @@ internal static class Program
     {
         var logger = new ConsoleLogger("LoopbackHarness");
         logger.Info("Phase 0 loopback harness -- capture/encode/decode/render pipeline not yet implemented.");
-        logger.Info("See docs/ARCHITECTURE.md Phase 0 for the exit criteria this tool needs to prove out.");
+        logger.Info("See docs/PHASE-0.md for the build order, exit criteria and known landmines.");
         return 0;
     }
 }
