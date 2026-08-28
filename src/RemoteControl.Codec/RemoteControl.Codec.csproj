@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Windows-only: Media Foundation hardware encoder/decoder MFTs. Cannot be
+    built on non-Windows hosts. This is the single highest-risk piece in the
+    whole rewrite (see docs/ARCHITECTURE.md, "Highest-risk pieces") - the
+    D3D11-aware zero-copy IMFTransform plumbing is fiddly and hardware/driver
+    dependent, and there's no working C# reference to copy. Prove it out on
+    real hardware in the Phase 0 loopback harness before building anything on
+    top of it.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Platforms>x64</Platforms>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Vortice.MediaFoundation" Version="3.8.3" />
+    <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\RemoteControl.Common\RemoteControl.Common.csproj" />
+  </ItemGroup>
+
+</Project>

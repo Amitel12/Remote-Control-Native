@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <!--
+    asInvoker (no forced elevation) for now -- client mode never needs it,
+    and forcing a UAC prompt on every launch for host mode would be a real
+    UX cost. SendInput into elevated windows/UAC prompts on the host still
+    requires the host app to be running elevated; that's a real limitation,
+    left an explicit decision for Phase 6 packaging (see
+    docs/ARCHITECTURE.md) rather than silently baked in here -- e.g. a
+    host-mode-only "Restart as Administrator" prompt, or a manifest split
+    between two build configurations.
+  -->
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="asInvoker" uiAccess="false" />
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
+    </windowsSettings>
+  </application>
+</assembly>

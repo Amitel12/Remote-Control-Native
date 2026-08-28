@@ -1,0 +1,18 @@
+<Window x:Class="RemoteControl.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Remote Control" Height="450" Width="700">
+    <!--
+        Placeholder shell. Host/client mode-select UI, pairing screen, and
+        the D3DImage-hosted video surface (RemoteControl.Render) land in
+        Phase 5 ("feature parity pass") per docs/ARCHITECTURE.md -- Phases 0-4
+        are proven out via tools/LoopbackHarness and console-driven testing
+        first, since the codec/transport pipeline is the actual risk, not
+        this shell.
+    -->
+    <Grid>
+        <TextBlock Text="Remote Control -- native rewrite in progress"
+                   HorizontalAlignment="Center" VerticalAlignment="Center"
+                   FontSize="16" />
+    </Grid>
+</Window>

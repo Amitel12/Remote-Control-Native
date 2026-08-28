@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Windows-only WPF shell. Cannot be built on non-Windows hosts. Hosts the
+    D3D11 swap chain from RemoteControl.Render via D3DImage/Interop - WPF was
+    chosen over WinUI3 for its more mature D3D-hosting story and simpler
+    side-load packaging (see docs/ARCHITECTURE.md, Phase 6 packaging).
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Platforms>x64</Platforms>
+    <UseWPF>true</UseWPF>
+    <OutputType>WinExe</OutputType>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\RemoteControl.Capture\RemoteControl.Capture.csproj" />
+    <ProjectReference Include="..\RemoteControl.Codec\RemoteControl.Codec.csproj" />
+    <ProjectReference Include="..\RemoteControl.Render\RemoteControl.Render.csproj" />
+    <ProjectReference Include="..\RemoteControl.Net\RemoteControl.Net.csproj" />
+    <ProjectReference Include="..\RemoteControl.Input\RemoteControl.Input.csproj" />
+    <ProjectReference Include="..\RemoteControl.Signaling\RemoteControl.Signaling.csproj" />
+    <ProjectReference Include="..\RemoteControl.Protocol\RemoteControl.Protocol.csproj" />
+    <ProjectReference Include="..\RemoteControl.Common\RemoteControl.Common.csproj" />
+  </ItemGroup>
+
+</Project>

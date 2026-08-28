@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Windows-only: SendInput injection + raw input capture via direct P/Invoke
+    (no package needed - see Win32Native.cs). Cannot be built on non-Windows
+    hosts. Bakes in lessons #1-#3 from docs/ARCHITECTURE.md (physical-pixel
+    coordinates throughout, KEYEVENTF_UNICODE for character input,
+    button-state safety net against stuck buttons) from the start.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Platforms>x64</Platforms>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\RemoteControl.Common\RemoteControl.Common.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Windows-only: DXGI Desktop Duplication API. This project cannot be built
+    on non-Windows hosts (the net8.0-windows TFM requires the Windows SDK),
+    including the Linux sandbox this repo was scaffolded from - verify
+    builds on the real Windows dev machine, not here. See docs/ARCHITECTURE.md
+    (Phase 0) for why this is the first thing to prove out.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>false</UseWindowsForms>
+    <Platforms>x64</Platforms>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
+    <PackageReference Include="Vortice.DXGI" Version="3.8.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\RemoteControl.Common\RemoteControl.Common.csproj" />
+  </ItemGroup>
+
+</Project>

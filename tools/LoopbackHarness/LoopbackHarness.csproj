@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Phase 0 tool (see docs/ARCHITECTURE.md): capture -> encode -> decode ->
+    render, single machine, no networking. This is the go/no-go gate for the
+    whole rewrite - prove sustained 60fps 1080p with zero CPU-side texture
+    copies and a measurable latency win from zero-B-frames/IPPP +
+    MF_LOW_LATENCY before building Phase 1+ on top of these assumptions.
+    Windows-only; cannot be built or run outside a real Windows dev machine.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Platforms>x64</Platforms>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>RemoteControl.Tools.LoopbackHarness</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\RemoteControl.Capture\RemoteControl.Capture.csproj" />
+    <ProjectReference Include="..\..\src\RemoteControl.Codec\RemoteControl.Codec.csproj" />
+    <ProjectReference Include="..\..\src\RemoteControl.Render\RemoteControl.Render.csproj" />
+    <ProjectReference Include="..\..\src\RemoteControl.Common\RemoteControl.Common.csproj" />
+  </ItemGroup>
+
+</Project>

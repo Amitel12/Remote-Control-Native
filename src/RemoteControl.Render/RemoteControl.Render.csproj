@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Windows-only: D3D11 swap-chain presentation. Cannot be built on
+    non-Windows hosts. Owns DXGI_STATUS_OCCLUDED / ResizeBuffers handling on
+    minimize/restore (see docs/ARCHITECTURE.md lesson #4) - get this right
+    from the start rather than discovering it live, the way the Electron
+    predecessor's GPU-teardown-on-minimize bug was discovered.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Platforms>x64</Platforms>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
+    <PackageReference Include="Vortice.DXGI" Version="3.8.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\RemoteControl.Common\RemoteControl.Common.csproj" />
+  </ItemGroup>
+
+</Project>
