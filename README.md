@@ -9,12 +9,11 @@ is Parsec/Moonlight-tier smoothness: GPU-resident capture, hardware
 encode/decode, and a custom low-latency UDP transport instead of a
 browser's general-purpose media stack.
 
-The full architecture, phased build order, and risk register live in the
-planning doc from the session that scaffolded this repo (not checked in
-here) -- see `docs/WIRE-PROTOCOL.md` for the two protocols this app
-speaks, and `docs/ARCHITECTURE.md` in `amitel12/tests` for the lessons
-(DPI scaling, keyboard layout, mouse-capture-during-drag, GPU-swap-chain
-lifecycle) this rewrite carries forward from the Electron prototype.
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full plan --
+context, researched decisions, phased build order, and the risk register,
+kept up to date as phases land -- and
+[`docs/WIRE-PROTOCOL.md`](docs/WIRE-PROTOCOL.md) for the two protocols
+this app speaks.
 
 ## Status
 
