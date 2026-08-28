@@ -38,24 +38,29 @@ internal static class Program
 
         if (transforms.Count == 0)
         {
-            logger.Error("No H.264 transforms found at all, hardware or software.");
+            logger.Error("No video transforms found at all, hardware or software.");
             logger.Error("That is a genuine blocker for Phase 0 -- do not build the pipeline on this machine.");
             return 1;
         }
 
-        Console.WriteLine($"  {"CATEGORY",-16} {"TYPE",-4} NAME");
-        Console.WriteLine($"  {new string('-', 16)} {new string('-', 4)} {new string('-', 40)}");
+        // "264" marks a name that looks like H.264. It is a hint for the reader,
+        // not a load-bearing check -- Step 1 pins the format via IMFMediaType.
+        Console.WriteLine($"  {"CATEGORY",-16} {"TYPE",-4} {"H264?",-6} NAME");
+        Console.WriteLine($"  {new string('-', 16)} {new string('-', 4)} {new string('-', 6)} {new string('-', 40)}");
         foreach (var t in transforms)
         {
-            Console.WriteLine($"  {t.Category,-16} {(t.IsHardware ? "HW" : "SW"),-4} {t.FriendlyName}");
+            Console.WriteLine($"  {t.Category,-16} {(t.IsHardware ? "HW" : "SW"),-4} " +
+                              $"{(t.LooksLikeH264 ? "yes" : ""),-6} {t.FriendlyName}");
         }
         Console.WriteLine();
 
         var hardwareEncoders = transforms.Count(t => t.IsHardware && t.Category == "VideoEncoder");
         var hardwareDecoders = transforms.Count(t => t.IsHardware && t.Category == "VideoDecoder");
+        var h264Encoders = transforms.Count(t => t.IsHardware && t.Category == "VideoEncoder" && t.LooksLikeH264);
+        var h264Decoders = transforms.Count(t => t.IsHardware && t.Category == "VideoDecoder" && t.LooksLikeH264);
 
-        logger.Info($"Hardware H.264 encoders: {hardwareEncoders}");
-        logger.Info($"Hardware H.264 decoders: {hardwareDecoders}");
+        logger.Info($"Hardware video encoders: {hardwareEncoders} (H.264-looking: {h264Encoders})");
+        logger.Info($"Hardware video decoders: {hardwareDecoders} (H.264-looking: {h264Decoders})");
         Console.WriteLine();
 
         // The whole point of Step 0 is to make this verdict explicit rather
