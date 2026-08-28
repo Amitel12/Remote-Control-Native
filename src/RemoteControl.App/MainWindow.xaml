@@ -5,7 +5,7 @@
     <!--
         Placeholder shell. Host/client mode-select UI, pairing screen, and
         the D3DImage-hosted video surface (RemoteControl.Render) land in
-        Phase 5 ("feature parity pass") per docs/ARCHITECTURE.md -- Phases 0-4
+        Phase 5 ("feature parity pass") per docs/ARCHITECTURE.md. Phases 0-4
         are proven out via tools/LoopbackHarness and console-driven testing
         first, since the codec/transport pipeline is the actual risk, not
         this shell.
