@@ -1,0 +1,113 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # Windows is the only host that can build RemoteControl.App (WPF) and the
+  # Media Foundation / DXGI projects meaningfully. This job exists primarily as
+  # a compile check: Phase 0 code is written in an environment with no .NET SDK,
+  # so CI is the first thing that ever compiles it.
+  #
+  # Note runners have NO GPU. Anything here proves the code *builds*, never that
+  # the capture/encode/decode pipeline works -- that needs real hardware. Do not
+  # read a green run as Phase 0 passing its gate.
+  windows:
+    name: Build solution + test (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      # Malformed XML in a .manifest does NOT fail the build -- mt.exe embeds it
+      # as-is and the app dies at launch with "side-by-side configuration is
+      # incorrect". Parsing every XML input is the only cheap way to catch that
+      # class. XmlDocument is strict about the usual offender: "--" is illegal
+      # inside an XML comment body. Both bugs this guards against reached main.
+      - name: Validate XML inputs
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem -Recurse -File -Include *.xaml,*.csproj,*.props,*.manifest,*.config |
+            Where-Object { $_.FullName -notmatch '[\\/](bin|obj)[\\/]' }
+          $bad = $false
+          foreach ($f in $files) {
+            try {
+              [void][xml](Get-Content -LiteralPath $f.FullName -Raw)
+            } catch {
+              $rel = Resolve-Path -LiteralPath $f.FullName -Relative
+              Write-Host "::error file=$rel::Invalid XML: $($_.Exception.Message)"
+              $bad = $true
+            }
+          }
+          Write-Host "Checked $($files.Count) XML file(s)."
+          if ($bad) { throw 'One or more XML files are malformed.' }
+
+      - name: Build solution
+        run: dotnet build RemoteControl.sln --configuration Release
+
+      - name: Test
+        run: dotnet test RemoteControl.sln --configuration Release --no-build
+
+      # Proves the produced exe starts. A corrupt embedded manifest only ever
+      # surfaces at launch -- the build succeeds and the failure is a runtime
+      # side-by-side error -- so nothing before this step can catch it.
+      - name: Smoke-test that RemoteControl.App launches
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path src/RemoteControl.App/bin -Recurse `
+            -Filter RemoteControl.App.exe | Select-Object -First 1
+          if (-not $exe) { throw 'RemoteControl.App.exe was not produced by the build.' }
+          Write-Host "Launching $($exe.FullName)"
+          $p = Start-Process -FilePath $exe.FullName -PassThru
+          Start-Sleep -Seconds 8
+          if ($p.HasExited) {
+            throw "App exited on its own with code $($p.ExitCode); it failed to start."
+          }
+          Write-Host 'App started and stayed running.'
+          Stop-Process -Id $p.Id -Force
+
+      # The probe is expected to find no hardware transforms here (no GPU), so
+      # its exit code is informational only. What matters is that it runs at all
+      # without throwing: that exercises the Media Foundation interop end to end,
+      # which is the part most likely to be wrong when written without a
+      # compiler.
+      - name: Run the MFT probe (informational -- no GPU on runners)
+        shell: pwsh
+        continue-on-error: true
+        run: dotnet run --project tools/LoopbackHarness --configuration Release -p:Platform=x64
+
+  # Every project except RemoteControl.App compiles on any OS. The App is
+  # excluded by name rather than by building the solution, because the solution
+  # includes it and would fail here.
+  linux:
+    name: Build + test (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Build every project except the WPF app
+        run: |
+          set -euo pipefail
+          find src tools tests -name '*.csproj' ! -name 'RemoteControl.App.csproj' -print0 |
+            sort -z | while IFS= read -r -d '' proj; do
+              echo "==> $proj"
+              dotnet build "$proj" --configuration Release
+            done
+
+      - name: Test
+        run: |
+          set -euo pipefail
+          for proj in tests/*/*.csproj; do
+            echo "==> $proj"
+            dotnet test "$proj" --configuration Release
+          done
