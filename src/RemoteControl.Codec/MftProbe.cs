@@ -44,9 +44,12 @@ public static class MftProbe
     private const uint MfStartupFull = 0;
 
     // Startup/shutdown go straight to mfplat.dll rather than through Vortice.
-    // Vortice's MFStartup arity did not match its own XML docs, and it binds no
-    // MFShutdown at all -- these two exports are stable and documented, so
-    // calling them directly is both more predictable and correctly paired.
+    // Vortice does expose MediaFactory.MFStartup/MFShutdown, but the only
+    // *public* MFStartup overload takes a single undocumented bool -- its
+    // MFStartup(uint version, int flags) is private, which is why calling it
+    // with two arguments does not compile despite what the XML docs list.
+    // These mfplat exports are stable and documented, and passing MF_VERSION
+    // and MFSTARTUP_FULL explicitly beats guessing what the bool means.
     [DllImport("mfplat.dll", ExactSpelling = true)]
     private static extern int MFStartup(uint version, uint flags);
 
