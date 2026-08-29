@@ -1,4 +1,6 @@
+using System.Runtime.InteropServices;
 using RemoteControl.Common;
+using SharpGen.Runtime;
 using Vortice.MediaFoundation;
 
 namespace RemoteControl.Codec;
@@ -18,15 +20,30 @@ namespace RemoteControl.Codec;
 /// riskiest assumption in the rewrite.
 ///
 /// Note it enumerates *all* video encoders/decoders rather than filtering to
-/// H.264 through MFTEnumEx's type-info arguments. Those arguments are passed
-/// as null: the filter would need a Vortice struct whose exact name is not
-/// pinned down here, and listing everything is at least as informative for a
-/// probe -- the friendly names show plainly which codecs are present. Step 1
-/// pins the format properly, via IMFMediaType on the activated transform,
-/// which is where it actually matters.
+/// H.264 through MFTEnumEx's type-info arguments, which are passed as null.
+/// Listing everything is at least as informative for a probe -- the friendly
+/// names show plainly which codecs are present. Step 1 pins the format
+/// properly, via IMFMediaType on the activated transform, which is where it
+/// actually matters.
 /// </summary>
 public static class MftProbe
 {
+    /// <summary>
+    /// MFT_FRIENDLY_NAME_Attribute. Inlined as a raw GUID rather than taken
+    /// from Vortice's TransformAttributeKeys, because that field may be a
+    /// MediaAttributeKey wrapper rather than a Guid and GetAllocatedString
+    /// wants a Guid. The value is a fixed, documented Win32 constant.
+    /// </summary>
+    private static readonly Guid MftFriendlyNameAttribute =
+        new("314FFBAE-5B41-4C95-9C19-4E7D586FACE3");
+
+    /// <summary>
+    /// MF_VERSION, as passed to MFStartup. Inlined for the same reason: the
+    /// value is fixed and this avoids depending on the exact type of
+    /// MediaFactory.Version.
+    /// </summary>
+    private const uint MfVersion = 0x00020070;
+
     /// <summary>One enumerated transform.</summary>
     public sealed record MftInfo(string Category, string FriendlyName, bool IsHardware)
     {
@@ -51,18 +68,15 @@ public static class MftProbe
         var log = logger ?? new ConsoleLogger(nameof(MftProbe));
         var results = new List<MftInfo>();
 
-        MediaFactory.MFStartup();
-        try
-        {
-            results.AddRange(EnumerateCategory(
-                "VideoEncoder", MFTransformCategoryGuids.VideoEncoder, log));
-            results.AddRange(EnumerateCategory(
-                "VideoDecoder", MFTransformCategoryGuids.VideoDecoder, log));
-        }
-        finally
-        {
-            MediaFactory.MFShutdown();
-        }
+        // Vortice binds no MFShutdown, so this startup is deliberately not
+        // paired with one. Harmless here: the probe is a short-lived process
+        // and the reference goes away when it exits.
+        MediaFactory.MFStartup(MfVersion, 0);
+
+        results.AddRange(EnumerateCategory(
+            "VideoEncoder", TransformCategoryGuids.VideoEncoder, log));
+        results.AddRange(EnumerateCategory(
+            "VideoDecoder", TransformCategoryGuids.VideoDecoder, log));
 
         return results
             .OrderByDescending(r => r.IsHardware)
@@ -71,9 +85,11 @@ public static class MftProbe
             .ToList();
     }
 
-    private static IEnumerable<MftInfo> EnumerateCategory(
+    private static List<MftInfo> EnumerateCategory(
         string categoryName, Guid category, ILogger log)
     {
+        var found = new List<MftInfo>();
+
         // Hardware and software are enumerated separately rather than filtered
         // out of one combined list: MFT_ENUM_FLAG_HARDWARE is the only
         // authoritative signal that a transform is GPU-backed, and inferring it
@@ -81,15 +97,19 @@ public static class MftProbe
         // to replace.
         foreach (var (flag, isHardware) in new[]
                  {
-                     (MFTEnumFlag.Hardware, true),
-                     (MFTEnumFlag.SyncMFT | MFTEnumFlag.AsyncMFT, false),
+                     (EnumFlag.EnumFlagHardware, true),
+                     (EnumFlag.EnumFlagSyncmft | EnumFlag.EnumFlagAsyncmft, false),
                  })
         {
-            IMFActivate[] activates;
+            var flags = (uint)(flag | EnumFlag.EnumFlagSortandfilter);
+
+            IntPtr activateArray;
+            uint count;
             try
             {
-                activates = MediaFactory.MFTEnumEx(
-                    category, flag | MFTEnumFlag.SortAndFilter, null, null);
+                // MFTEnumEx hands back a CoTaskMem array of IMFActivate*, not a
+                // managed array -- hence the manual walk and free below.
+                MediaFactory.MFTEnumEx(category, flags, null, null, out activateArray, out count);
             }
             catch (Exception ex)
             {
@@ -98,23 +118,44 @@ public static class MftProbe
                 continue;
             }
 
-            foreach (var activate in activates)
+            if (activateArray == IntPtr.Zero || count == 0)
             {
-                string name;
-                try
-                {
-                    name = activate.GetString(TransformAttributeKeys.MftFriendlyNameAttribute);
-                }
-                catch (Exception)
-                {
-                    // Some transforms genuinely carry no friendly name. Not a
-                    // probe failure -- the entry still counts.
-                    name = "(no friendly name)";
-                }
+                if (activateArray != IntPtr.Zero) Marshal.FreeCoTaskMem(activateArray);
+                continue;
+            }
 
-                yield return new MftInfo(categoryName, name, isHardware);
-                activate.Dispose();
+            try
+            {
+                for (var i = 0; i < (int)count; i++)
+                {
+                    var ptr = Marshal.ReadIntPtr(activateArray, i * IntPtr.Size);
+                    if (ptr == IntPtr.Zero) continue;
+
+                    var activate = MarshallingHelpers.FromPointer<IMFActivate>(ptr);
+                    if (activate is null) continue;
+
+                    string name;
+                    try
+                    {
+                        name = activate.GetAllocatedString(MftFriendlyNameAttribute);
+                    }
+                    catch (Exception)
+                    {
+                        // Some transforms genuinely carry no friendly name. Not
+                        // a probe failure -- the entry still counts.
+                        name = "(no friendly name)";
+                    }
+
+                    found.Add(new MftInfo(categoryName, name, isHardware));
+                    activate.Dispose();
+                }
+            }
+            finally
+            {
+                Marshal.FreeCoTaskMem(activateArray);
             }
         }
+
+        return found;
     }
 }
