@@ -37,12 +37,21 @@ public static class MftProbe
     private static readonly Guid MftFriendlyNameAttribute =
         new("314FFBAE-5B41-4C95-9C19-4E7D586FACE3");
 
-    /// <summary>
-    /// MF_VERSION, as passed to MFStartup. Inlined for the same reason: the
-    /// value is fixed and this avoids depending on the exact type of
-    /// MediaFactory.Version.
-    /// </summary>
+    /// <summary>MF_VERSION, as passed to MFStartup.</summary>
     private const uint MfVersion = 0x00020070;
+
+    /// <summary>MFSTARTUP_FULL.</summary>
+    private const uint MfStartupFull = 0;
+
+    // Startup/shutdown go straight to mfplat.dll rather than through Vortice.
+    // Vortice's MFStartup arity did not match its own XML docs, and it binds no
+    // MFShutdown at all -- these two exports are stable and documented, so
+    // calling them directly is both more predictable and correctly paired.
+    [DllImport("mfplat.dll", ExactSpelling = true)]
+    private static extern int MFStartup(uint version, uint flags);
+
+    [DllImport("mfplat.dll", ExactSpelling = true)]
+    private static extern int MFShutdown();
 
     /// <summary>One enumerated transform.</summary>
     public sealed record MftInfo(string Category, string FriendlyName, bool IsHardware)
@@ -68,15 +77,24 @@ public static class MftProbe
         var log = logger ?? new ConsoleLogger(nameof(MftProbe));
         var results = new List<MftInfo>();
 
-        // Vortice binds no MFShutdown, so this startup is deliberately not
-        // paired with one. Harmless here: the probe is a short-lived process
-        // and the reference goes away when it exits.
-        MediaFactory.MFStartup(MfVersion, 0);
+        var hr = MFStartup(MfVersion, MfStartupFull);
+        if (hr < 0)
+        {
+            log.Error($"MFStartup failed with HRESULT 0x{hr:X8}. Media Foundation is unavailable.");
+            return results;
+        }
 
-        results.AddRange(EnumerateCategory(
-            "VideoEncoder", TransformCategoryGuids.VideoEncoder, log));
-        results.AddRange(EnumerateCategory(
-            "VideoDecoder", TransformCategoryGuids.VideoDecoder, log));
+        try
+        {
+            results.AddRange(EnumerateCategory(
+                "VideoEncoder", TransformCategoryGuids.VideoEncoder, log));
+            results.AddRange(EnumerateCategory(
+                "VideoDecoder", TransformCategoryGuids.VideoDecoder, log));
+        }
+        finally
+        {
+            MFShutdown();
+        }
 
         return results
             .OrderByDescending(r => r.IsHardware)
@@ -134,7 +152,7 @@ public static class MftProbe
                     var activate = MarshallingHelpers.FromPointer<IMFActivate>(ptr);
                     if (activate is null) continue;
 
-                    string name;
+                    string? name;
                     try
                     {
                         name = activate.GetAllocatedString(MftFriendlyNameAttribute);
@@ -143,10 +161,13 @@ public static class MftProbe
                     {
                         // Some transforms genuinely carry no friendly name. Not
                         // a probe failure -- the entry still counts.
-                        name = "(no friendly name)";
+                        name = null;
                     }
 
-                    found.Add(new MftInfo(categoryName, name, isHardware));
+                    found.Add(new MftInfo(
+                        categoryName,
+                        string.IsNullOrWhiteSpace(name) ? "(no friendly name)" : name,
+                        isHardware));
                     activate.Dispose();
                 }
             }
