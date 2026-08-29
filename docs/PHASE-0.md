@@ -65,6 +65,26 @@ It enumerates only -- it never activates or configures a transform, so a
 pass means the pieces are *present*, not that they can be driven. That
 is Step 1's job.
 
+**Result on the first real machine (NVIDIA GPU, Windows 11):**
+
+- `NVIDIA H.264 Encoder MFT` -- hardware. The encode side is real.
+- No hardware H.264 *decoder*. The only hardware decoder exposed is
+  `NVIDIA MJPEG Video Decoder MFT`; the H.264 decoder available is
+  `Microsoft H264 Video Decoder MFT`, enumerated as software.
+
+That asymmetry is expected on Windows, not a fault. GPU vendors generally
+do not ship a standalone hardware H.264 decoder MFT: hardware decode is
+reached *through* the Microsoft H264 Video Decoder MFT, which uses
+DXVA2/D3D11VA internally once handed a D3D device manager via
+`MFT_MESSAGE_SET_D3D_MANAGER`.
+
+The consequence for Step 1 is concrete: the encoder and decoder are not
+symmetric pieces. The encoder is a vendor hardware MFT; the decoder is a
+Microsoft MFT that must be *told* to use the GPU. Confirming that decoder
+reports `MF_SA_D3D11_AWARE` and genuinely returns D3D11 textures is the
+first thing Step 1 has to establish -- until then, zero-copy on the decode
+half of the pipeline is unproven, and it is half the gate.
+
 **Step 1 -- codec against a synthetic source.** Feed a hand-made D3D11
 texture (solid colour, or a moving rectangle so successive frames differ)
 straight into encode -> decode. No Desktop Duplication, no swap chain.
