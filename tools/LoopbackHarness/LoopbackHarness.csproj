@@ -13,6 +13,7 @@
     <Platforms>x64</Platforms>
     <OutputType>Exe</OutputType>
     <RootNamespace>RemoteControl.Tools.LoopbackHarness</RootNamespace>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <ItemGroup>
@@ -20,6 +21,17 @@
     <ProjectReference Include="..\..\src\RemoteControl.Codec\RemoteControl.Codec.csproj" />
     <ProjectReference Include="..\..\src\RemoteControl.Render\RemoteControl.Render.csproj" />
     <ProjectReference Include="..\..\src\RemoteControl.Common\RemoteControl.Common.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      Step 1 verification only (docs/PHASE-0.md): decode one frame back to
+      CPU and write a PNG to confirm output correctness. See
+      FrameVerifier.cs - kept isolated to that one file and one guarded call
+      site so it can be removed without touching the pipeline itself, since
+      a readback here would mask the separate zero-copy measurement.
+    -->
+    <PackageReference Include="System.Drawing.Common" Version="8.0.0" />
   </ItemGroup>
 
 </Project>

@@ -102,7 +102,9 @@ failure modes look nothing alike:
 Since the second one builds clean, the only way to catch it is to launch
 the app. Worth doing after touching the manifest.
 
-There is no CI, so nothing checks this automatically. `RemoteControl.App`
-in particular is only ever compiled by whoever builds on Windows -- which
-is how both bugs above reached `main` from a machine that could not build
-it.
+CI (`.github/workflows/ci.yml`) now validates XML inputs and smoke-tests
+that `RemoteControl.App` actually launches, specifically to catch both bugs
+above. It only runs on `push`/`pull_request`/manual dispatch, though --
+`RemoteControl.App` is still only ever compiled by whoever builds on
+Windows locally between CI runs, which is how both bugs above reached
+`main` from a machine that could not build it.

@@ -197,17 +197,24 @@ Ordered so the two highest-risk unknowns surface first, not last.
    all passing, none of them exercised against real hardware or a real
    network yet -- that's still ahead.
 1. **Phase 0 -- Capture -> Encode -> Decode -> Render loopback, single
-   machine, no networking. NOT STARTED -- the actual next step.**
-   `LoopbackHarness` console app (currently a stub, see its `Program.cs`):
-   `DesktopDuplicator` -> `HardwareEncoder` -> in-process bytes ->
-   `HardwareDecoder` -> `SwapChainPresenter`. Validate sustained 60fps
-   1080p with zero CPU-side texture copies anywhere (verify via GPU
-   debugging/PIX, not eyeballing), and that zero-B-frames/IPPP +
-   `MF_LOW_LATENCY` measurably cuts encode-to-decode latency vs defaults.
-   **Go/no-go gate**: if D3D11-aware zero-copy doesn't actually hold up on
-   real test hardware, this is where that's discovered and re-planned
-   (e.g. fall back to vendor-specific NVENC) -- not after three more
-   phases are built on top of a broken assumption. Needs a real Windows
+   machine, no networking. Steps 0-1 done; Step 2 (capture + present) is
+   the actual next step.** See `docs/PHASE-0.md` for the full working plan
+   and results. Step 1 (codec against a synthetic D3D11 texture, no
+   `DesktopDuplicator`/`SwapChainPresenter` yet) hit its go/no-go gate for
+   real: **decode-side D3D11 zero-copy is confirmed working** end to end
+   (the Microsoft H264 Video Decoder MFT genuinely hands back D3D11
+   textures, verified by PNG readback matching the source); **encode-side
+   zero-copy is not usable on this hardware** -- the vendor (NVIDIA) H.264
+   encoder MFT rejects every D3D11 sample and never becomes ready to
+   accept input at all via any documented driving mechanism, confirmed
+   after eliminating every pipeline-side cause. `HardwareEncoder` falls
+   back to the software H.264 encoder MFT (proven correct against the same
+   pipeline) so the rest of Phase 0 can still be measured. This is exactly
+   the contingency named below -- **the next concrete investigation is
+   NVIDIA's native NVENC SDK** (a different, non-Media-Foundation API
+   surface) for the encode half specifically, not another pass at the MF
+   encoder MFT. Zero-CPU-copy verification via GPU debugging/PIX is still
+   open (see `docs/PHASE-0.md`, "Exit criteria"). Needs a real Windows
    machine with a real GPU; cannot be written or verified blind.
 2. **Phase 1 -- LAN UDP streaming, two machines, no NAT traversal.**
    `EnetTransport` with a hardcoded LAN address, `VideoPacketizer`/
@@ -264,13 +271,18 @@ Ordered so the two highest-risk unknowns surface first, not last.
 ## Highest-risk pieces (go in with eyes open)
 
 1. **The Media Foundation D3D11 zero-copy pipeline itself (Phase 0).**
-   Still the single biggest unknown -- `Vortice.MediaFoundation` is a
-   binding, not a batteries-included pipeline. Driving `IMFTransform`
-   correctly is fiddly, sparsely documented in C#, and hardware/
-   driver-dependent across vendors. No working C# reference exists to
-   copy. Treat Phase 0's exit criteria as a genuine go/no-go gate, not a
-   formality. **Unchanged by the work done so far** -- nothing in Phase 0
-   has been attempted yet.
+   Was the single biggest unknown; **now partially resolved, and the
+   picture is worse on the encode side than "fiddly and
+   sparsely-documented" suggested.** `Vortice.MediaFoundation` binds the
+   APIs correctly -- driving them took real trial and error (see
+   `docs/PHASE-0.md`'s Step 1 findings) but is not itself the blocker
+   anymore. The actual finding: decode-side D3D11 zero-copy genuinely
+   works on this hardware; encode-side does not -- the vendor (NVIDIA)
+   H.264 encoder MFT never becomes usable via Media Foundation on this
+   machine, independent of how carefully the D3D11 interop is done. The
+   risk this item named has *happened*, not just remained open, and its
+   contingency (vendor-specific NVENC, see `docs/PHASE-0.md`) is now the
+   live plan for the encode half specifically.
 2. **Hand-rolled Reed-Solomon FEC (Phase 4). Substantially de-risked on
    the algorithmic side, not yet on the network side.** The concern was
    "easy to get subtly wrong in ways that pass casual testing but fail
