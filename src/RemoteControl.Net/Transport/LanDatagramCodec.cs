@@ -8,6 +8,8 @@ public enum LanDatagramKind : byte
     Ready = 2,
     Video = 3,
     End = 4,
+    LatencyProbe = 5,
+    LatencyEcho = 6,
 }
 
 public readonly record struct LanDatagram(
@@ -29,6 +31,15 @@ public static class LanDatagramCodec
     private const uint Magic = 0x314E4352; // "RCN1" in little-endian bytes.
     private const int CommonHeaderSize = 13;
     private const int ConfigurationSize = CommonHeaderSize + 16;
+
+    // Probe payload: [PerfTicks int64][WallTicks int64], both the host's own
+    // clocks at send time. Echo payload adds the client's wall clock at
+    // receipt, unchanged perf/wall ticks passed straight through -- the
+    // client never has to interpret them, only echo them back verbatim.
+    private const int LatencyProbePayloadSize = 16;
+    private const int LatencyEchoPayloadSize = 24;
+    private const int LatencyProbeSize = CommonHeaderSize + LatencyProbePayloadSize;
+    private const int LatencyEchoSize = CommonHeaderSize + LatencyEchoPayloadSize;
 
     public static byte[] CreateConfiguration(
         ulong sessionId,
@@ -68,6 +79,47 @@ public static class LanDatagramCodec
         videoPacket.CopyTo(datagram.AsSpan(CommonHeaderSize));
         return datagram;
     }
+
+    /// <summary>
+    /// Sent by the host, roughly once a second. <paramref name="perfTicks"/>
+    /// (<see cref="System.Diagnostics.Stopwatch.GetTimestamp"/>) is what the
+    /// host uses to compute round-trip time when the echo comes back -- it
+    /// never leaves the host's own clock domain, so no cross-machine clock
+    /// sync is needed for RTT. <paramref name="wallTicks"/>
+    /// (<see cref="DateTime.UtcNow"/>.Ticks) is only for the client-side
+    /// clock-offset estimate in the echo.
+    /// </summary>
+    public static byte[] CreateLatencyProbe(ulong sessionId, long perfTicks, long wallTicks)
+    {
+        var datagram = CreateHeader(LanDatagramKind.LatencyProbe, sessionId, LatencyProbeSize);
+        BinaryPrimitives.WriteInt64LittleEndian(datagram.AsSpan(CommonHeaderSize, 8), perfTicks);
+        BinaryPrimitives.WriteInt64LittleEndian(datagram.AsSpan(CommonHeaderSize + 8, 8), wallTicks);
+        return datagram;
+    }
+
+    /// <summary>
+    /// Sent by the client immediately on receiving a probe. Passes the
+    /// probe's own two fields straight through unexamined, and appends the
+    /// client's wall clock at receipt so the host can estimate clock offset.
+    /// </summary>
+    public static byte[] CreateLatencyEcho(ulong sessionId, long probePerfTicks, long probeWallTicks, long clientWallTicks)
+    {
+        var datagram = CreateHeader(LanDatagramKind.LatencyEcho, sessionId, LatencyEchoSize);
+        BinaryPrimitives.WriteInt64LittleEndian(datagram.AsSpan(CommonHeaderSize, 8), probePerfTicks);
+        BinaryPrimitives.WriteInt64LittleEndian(datagram.AsSpan(CommonHeaderSize + 8, 8), probeWallTicks);
+        BinaryPrimitives.WriteInt64LittleEndian(datagram.AsSpan(CommonHeaderSize + 16, 8), clientWallTicks);
+        return datagram;
+    }
+
+    /// <summary>Reads a <see cref="LanDatagramKind.LatencyProbe"/> datagram's payload.</summary>
+    public static (long PerfTicks, long WallTicks) ReadLatencyProbe(ReadOnlySpan<byte> payload) =>
+        (BinaryPrimitives.ReadInt64LittleEndian(payload[..8]), BinaryPrimitives.ReadInt64LittleEndian(payload[8..16]));
+
+    /// <summary>Reads a <see cref="LanDatagramKind.LatencyEcho"/> datagram's payload.</summary>
+    public static (long ProbePerfTicks, long ProbeWallTicks, long ClientWallTicks) ReadLatencyEcho(ReadOnlySpan<byte> payload) =>
+        (BinaryPrimitives.ReadInt64LittleEndian(payload[..8]),
+         BinaryPrimitives.ReadInt64LittleEndian(payload[8..16]),
+         BinaryPrimitives.ReadInt64LittleEndian(payload[16..24]));
 
     public static bool TryRead(ReadOnlySpan<byte> source, out LanDatagram datagram)
     {
@@ -113,6 +165,8 @@ public static class LanDatagramCodec
                 return true;
 
             case LanDatagramKind.Video when source.Length > CommonHeaderSize:
+            case LanDatagramKind.LatencyProbe when source.Length == LatencyProbeSize:
+            case LanDatagramKind.LatencyEcho when source.Length == LatencyEchoSize:
                 datagram = new LanDatagram(
                     kind,
                     sessionId,
