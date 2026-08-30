@@ -59,7 +59,8 @@ internal static class Program
                 RunStep2(
                     logger,
                     verifyFrame: !args.Contains("--no-verify-frame"),
-                    exerciseWindowState: args.Contains("--exercise-window-state"));
+                    exerciseWindowState: args.Contains("--exercise-window-state"),
+                    targetPresentedFrames: ReadFrameTarget(args));
             }
         }
         catch (Exception ex)
@@ -75,11 +76,33 @@ internal static class Program
         return 0;
     }
 
-    private static void RunStep2(ILogger logger, bool verifyFrame, bool exerciseWindowState)
+    private static int ReadFrameTarget(string[] args)
+    {
+        var optionIndex = Array.IndexOf(args, "--frames");
+        if (optionIndex < 0)
+            return 300;
+
+        if (optionIndex + 1 >= args.Length ||
+            !int.TryParse(args[optionIndex + 1], out var frameTarget) ||
+            frameTarget < 0)
+        {
+            throw new ArgumentException("--frames requires a non-negative integer. Use --frames 0 to run until the window is closed.");
+        }
+
+        return frameTarget;
+    }
+
+    private static void RunStep2(
+        ILogger logger,
+        bool verifyFrame,
+        bool exerciseWindowState,
+        int targetPresentedFrames)
     {
         Console.WriteLine();
         logger.Info("Phase 0 / Step 2 -- live desktop capture -> native NVENC -> D3D11 decode -> swap chain.");
-        logger.Info("Close the presentation window to stop early; the acceptance run targets 300 presented frames.");
+        logger.Info(targetPresentedFrames == 0
+            ? "PIX capture mode: running until the presentation window is closed."
+            : $"Close the presentation window to stop early; the acceptance run targets {targetPresentedFrames} presented frames.");
         Console.WriteLine();
 
         using var mfDevice = MfDevice.Create(logger);
@@ -126,8 +149,9 @@ internal static class Program
             FpsDenominator,
             logger);
 
-        const int targetPresentedFrames = 300;
-        var runLimit = TimeSpan.FromSeconds(20);
+        TimeSpan? runLimit = targetPresentedFrames == 0
+            ? null
+            : TimeSpan.FromSeconds(Math.Max(20, targetPresentedFrames / 30.0));
         var run = Stopwatch.StartNew();
         var captureToPresentMs = new List<double>();
         var acquireTimeouts = 0;
@@ -139,7 +163,9 @@ internal static class Program
         var skippedMinimized = 0;
         var verificationSaved = false;
 
-        while (!window.IsClosed && presented < targetPresentedFrames && run.Elapsed < runLimit)
+        while (!window.IsClosed &&
+               (targetPresentedFrames == 0 || presented < targetPresentedFrames) &&
+               (runLimit is null || run.Elapsed < runLimit.Value))
         {
             window.PumpEvents();
             if (window.TryConsumeResize(out var width, out var height))
@@ -250,8 +276,8 @@ internal static class Program
                         $"(n={steady.Count}, warmup skipped; Present called with syncInterval=0).");
         }
 
-        if (!window.IsClosed && presented < targetPresentedFrames)
-            throw new InvalidOperationException($"Live loop did not reach {targetPresentedFrames} presented frames within {runLimit.TotalSeconds:0}s (got {presented}).");
+        if (targetPresentedFrames > 0 && !window.IsClosed && presented < targetPresentedFrames)
+            throw new InvalidOperationException($"Live loop did not reach {targetPresentedFrames} presented frames within {runLimit!.Value.TotalSeconds:0}s (got {presented}).");
 
         if (!window.IsClosed)
             logger.Info("PASS -- sustained live capture/encode/decode/present loop completed on real hardware.");
