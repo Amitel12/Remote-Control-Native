@@ -1,7 +1,10 @@
 using System.Diagnostics;
+using RemoteControl.Capture;
 using RemoteControl.Codec;
 using RemoteControl.Common;
+using RemoteControl.Render;
 using Vortice.Direct3D11;
+using CodecColorConverter = RemoteControl.Codec.ColorConverter;
 
 namespace RemoteControl.Tools.LoopbackHarness;
 
@@ -11,9 +14,8 @@ namespace RemoteControl.Tools.LoopbackHarness;
 /// (decode) -> RemoteControl.Render on one machine, no networking, and measures
 /// whether the pipeline sustains 60fps 1080p with zero CPU-side texture copies.
 ///
-/// Step 0 (MFT probe) and Step 1 (codec against a synthetic D3D11 texture,
-/// isolated from capture/render) are implemented. DesktopDuplicator and
-/// SwapChainPresenter are Step 2.
+/// Step 0 probes transforms, Step 1 tests the codec against a synthetic
+/// texture, and Step 2 runs the full live desktop loopback.
 /// </summary>
 internal static class Program
 {
@@ -23,6 +25,7 @@ internal static class Program
     private const uint FpsDenominator = 1;
     private const int FrameCount = 180; // 3s at 60fps -- Phase 0's target cadence, with enough frames for a stable latency average.
 
+    [STAThread]
     private static int Main(string[] args)
     {
         var logger = new ConsoleLogger("LoopbackHarness");
@@ -44,14 +47,24 @@ internal static class Program
         Vortice.MediaFoundation.MediaFactory.MFStartup(false).CheckError();
         try
         {
-            RunStep1(
-                logger,
-                verifyFrame: !args.Contains("--no-verify-frame"),
-                useNativeNvenc: !args.Contains("--mf-encoder"));
+            if (args.Contains("--step1"))
+            {
+                RunStep1(
+                    logger,
+                    verifyFrame: !args.Contains("--no-verify-frame"),
+                    useNativeNvenc: !args.Contains("--mf-encoder"));
+            }
+            else
+            {
+                RunStep2(
+                    logger,
+                    verifyFrame: !args.Contains("--no-verify-frame"),
+                    exerciseWindowState: args.Contains("--exercise-window-state"));
+            }
         }
         catch (Exception ex)
         {
-            logger.Error("Step 1 failed.", ex);
+            logger.Error("Phase 0 hardware run failed.", ex);
             return 1;
         }
         finally
@@ -60,6 +73,190 @@ internal static class Program
         }
 
         return 0;
+    }
+
+    private static void RunStep2(ILogger logger, bool verifyFrame, bool exerciseWindowState)
+    {
+        Console.WriteLine();
+        logger.Info("Phase 0 / Step 2 -- live desktop capture -> native NVENC -> D3D11 decode -> swap chain.");
+        logger.Info("Close the presentation window to stop early; the acceptance run targets 300 presented frames.");
+        Console.WriteLine();
+
+        using var mfDevice = MfDevice.Create(logger);
+        var displays = DisplayEnumerator.Enumerate(mfDevice.Device);
+        if (displays.Count == 0)
+            throw new InvalidOperationException("The D3D11 adapter has no attached desktop outputs.");
+
+        foreach (var display in displays)
+            logger.Info($"Output {display.OutputIndex}: {display.DeviceName}, {display.Width}x{display.Height} at ({display.Left},{display.Top}), {display.Rotation}.");
+
+        var selected = displays[0];
+        using var duplicator = new DesktopDuplicator(
+            mfDevice.Device,
+            mfDevice.ImmediateContext,
+            selected.OutputIndex,
+            logger);
+        if ((duplicator.Width & 1) != 0 || (duplicator.Height & 1) != 0)
+            throw new NotSupportedException($"NV12 requires even dimensions; selected output is {duplicator.Width}x{duplicator.Height}.");
+
+        using var window = new PresentationWindow(selected);
+        using var presenter = new SwapChainPresenter(
+            mfDevice.Device,
+            mfDevice.ImmediateContext,
+            window.Handle,
+            duplicator.Width,
+            duplicator.Height,
+            window.ClientWidth,
+            window.ClientHeight,
+            logger);
+        using var converter = new CodecColorConverter(mfDevice, duplicator.Width, duplicator.Height, logger: logger);
+        using var encoder = new NvencEncoder(
+            mfDevice,
+            duplicator.Width,
+            duplicator.Height,
+            FpsNumerator,
+            FpsDenominator,
+            lowLatency: true,
+            logger: logger);
+        using var decoder = new HardwareDecoder(
+            mfDevice,
+            duplicator.Width,
+            duplicator.Height,
+            FpsNumerator,
+            FpsDenominator,
+            logger);
+
+        const int targetPresentedFrames = 300;
+        var runLimit = TimeSpan.FromSeconds(20);
+        var run = Stopwatch.StartNew();
+        var captureToPresentMs = new List<double>();
+        var acquireTimeouts = 0;
+        var captured = 0;
+        var encoded = 0;
+        var decoded = 0;
+        var presented = 0;
+        var occluded = 0;
+        var skippedMinimized = 0;
+        var verificationSaved = false;
+
+        while (!window.IsClosed && presented < targetPresentedFrames && run.Elapsed < runLimit)
+        {
+            window.PumpEvents();
+            if (window.TryConsumeResize(out var width, out var height))
+                presenter.Resize(width, height);
+
+            if (!duplicator.TryAcquireNextFrame(100, out var desktopFrame))
+            {
+                acquireTimeouts++;
+                continue;
+            }
+
+            using (desktopFrame)
+            {
+                captured++;
+                if (exerciseWindowState)
+                {
+                    if (captured == 60)
+                    {
+                        logger.Info("[live] Exercising ResizeBuffers: resizing presentation client to 960x540.");
+                        window.ResizeClient(960, 540);
+                    }
+                    else if (captured == 120)
+                    {
+                        logger.Info("[live] Exercising occlusion handling: minimizing presentation window.");
+                        window.Minimize();
+                    }
+                    else if (captured == 150)
+                    {
+                        logger.Info("[live] Restoring presentation window after minimize.");
+                        window.Restore();
+                    }
+                }
+
+                var frameTimer = Stopwatch.StartNew();
+                var sampleTime = (captured - 1L) * 10_000_000L * FpsDenominator / FpsNumerator;
+                var sampleDuration = 10_000_000L * FpsDenominator / FpsNumerator;
+                var (nv12, nv12Subresource) = converter.Convert(
+                    desktopFrame!.Texture,
+                    sampleTime,
+                    sampleDuration);
+                using (nv12)
+                {
+                    encoder.Encode(nv12, encodedBytes =>
+                    {
+                        encoded++;
+                        decoder.Decode(encodedBytes, decodedFrame =>
+                        {
+                            using (decodedFrame.Texture)
+                            {
+                                decoded++;
+                                if (verifyFrame && !verificationSaved)
+                                {
+                                    verificationSaved = true;
+                                    var path = Path.Combine(AppContext.BaseDirectory, "step2-desktop-verify-frame.png");
+                                    FrameVerifier.SaveNv12FrameAsPng(
+                                        mfDevice.Device,
+                                        mfDevice.ImmediateContext,
+                                        decodedFrame.Texture,
+                                        path,
+                                        decodedFrame.SubresourceIndex);
+                                    logger.Info($"Wrote live desktop verification frame: {path}");
+                                }
+
+                                var outcome = presenter.Present(decodedFrame.Texture, decodedFrame.SubresourceIndex);
+                                switch (outcome)
+                                {
+                                    case PresentOutcome.Presented:
+                                        presented++;
+                                        frameTimer.Stop();
+                                        captureToPresentMs.Add(frameTimer.Elapsed.TotalMilliseconds);
+                                        break;
+                                    case PresentOutcome.Occluded:
+                                        occluded++;
+                                        break;
+                                    case PresentOutcome.SkippedWhileMinimized:
+                                        skippedMinimized++;
+                                        break;
+                                }
+                            }
+                        });
+                    }, nv12Subresource);
+                }
+            }
+        }
+
+        encoder.Drain(encodedBytes =>
+        {
+            encoded++;
+            decoder.Decode(encodedBytes, decodedFrame =>
+            {
+                decoded++;
+                decodedFrame.Texture.Dispose();
+            });
+        });
+        decoder.Drain(decodedFrame =>
+        {
+            decoded++;
+            decodedFrame.Texture.Dispose();
+        });
+
+        logger.Info($"[live] captured={captured}, encoded={encoded}, decoded={decoded}, presented={presented}, " +
+                    $"timeouts={acquireTimeouts}, occluded={occluded}, minimized-skips={skippedMinimized}.");
+        if (captureToPresentMs.Count > 5)
+        {
+            var steady = captureToPresentMs.Skip(5).ToList();
+            logger.Info($"[live] capture-to-present callback latency avg={steady.Average():0.###}ms " +
+                        $"min={steady.Min():0.###}ms max={steady.Max():0.###}ms " +
+                        $"(n={steady.Count}, warmup skipped; Present called with syncInterval=0).");
+        }
+
+        if (!window.IsClosed && presented < targetPresentedFrames)
+            throw new InvalidOperationException($"Live loop did not reach {targetPresentedFrames} presented frames within {runLimit.TotalSeconds:0}s (got {presented}).");
+
+        if (!window.IsClosed)
+            logger.Info("PASS -- sustained live capture/encode/decode/present loop completed on real hardware.");
+        else
+            logger.Warn($"Presentation window was closed after {presented} frames; this was an operator-shortened run.");
     }
 
     private static bool RunStep0(ILogger logger)
@@ -175,7 +372,7 @@ internal static class Program
         using var mfEncoder = useNativeNvenc
             ? null
             : new HardwareEncoder(mfDevice, Width, Height, FpsNumerator, FpsDenominator, lowLatency, logger: logger);
-        using var colorConverter = new ColorConverter(mfDevice, Width, Height, logger: logger);
+        using var colorConverter = new CodecColorConverter(mfDevice, Width, Height, logger: logger);
         using var decoder = new HardwareDecoder(mfDevice, Width, Height, FpsNumerator, FpsDenominator, logger);
 
         var encodeLatenciesMs = new List<double>();

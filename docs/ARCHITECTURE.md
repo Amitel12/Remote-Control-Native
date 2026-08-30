@@ -199,10 +199,9 @@ Ordered so the two highest-risk unknowns surface first, not last.
    all passing, none of them exercised against real hardware or a real
    network yet -- that's still ahead.
 1. **Phase 0 -- Capture -> Encode -> Decode -> Render loopback, single
-   machine, no networking. Steps 0-1 done; Step 2 (capture + present) is
-   the actual next step.** See `docs/PHASE-0.md` for the full working plan
-   and results. Step 1 (codec against a synthetic D3D11 texture, no
-   `DesktopDuplicator`/`SwapChainPresenter` yet) hit its go/no-go gate for
+   machine, no networking. Steps 0-2 done and real-hardware verified.** See
+   `docs/PHASE-0.md` for the full working plan and results. Step 1 (codec
+   against a synthetic D3D11 texture) hit its go/no-go gate for
    real: **decode-side D3D11 zero-copy is confirmed working** end to end
    (the Microsoft H264 Video Decoder MFT genuinely hands back D3D11
    textures, verified by PNG readback matching the source); **encode-side
@@ -217,8 +216,14 @@ Ordered so the two highest-risk unknowns surface first, not last.
    encoding 180/180 frames at 1080p60. The first Release run averaged
    2.583ms encode with P1 ultra-low-latency IPPP versus 2.942ms with P4
    high-quality IPPP. PIX verification of no hidden driver-side CPU copy is
-   still open (see `docs/PHASE-0.md`, "Exit criteria"). Step 2 capture and
-   presentation are now the actual next work.
+   still open (see `docs/PHASE-0.md`, "Exit criteria"). Step 2 then completed
+   the real desktop path: 315 frames captured/encoded/decoded and 300
+   presented in the Release acceptance run, with 3.064ms average steady
+   capture-to-`Present` callback latency. A separate run exercised live
+   `ResizeBuffers` plus minimize/restore and continued to completion. The
+   one necessary capture bridge is a GPU `CopyResource` from the bindless
+   Desktop Duplication surface into a reusable render-target texture; no
+   CPU pixel copy is introduced.
 2. **Phase 1 -- LAN UDP streaming, two machines, no NAT traversal.**
    `EnetTransport` with a hardcoded LAN address, `VideoPacketizer`/
    `VideoDepacketizer` (already implemented, see above) wired in, no FEC
@@ -286,9 +291,12 @@ Ordered so the two highest-risk unknowns surface first, not last.
    risk happened on the Media Foundation path, but its contingency is now
    proven: native NVENC accepts the same GPU-resident D3D11 NV12 texture
    (including the real subresource index), encodes pixel-correct H.264 at
-   1080p60, and feeds the already-proven D3D11 decoder. Remaining work for
-   this risk is PIX verification and later input/output resource pooling;
-   do not reopen the failed NVIDIA encoder MFT path.
+   1080p60, and feeds the already-proven D3D11 decoder.
+   `SwapChainPresenter` now also consumes the decoder's real texture-array
+   slice directly through the D3D11 video processor. Remaining work for this
+   risk is PIX verification, longer `DXGI_ERROR_ACCESS_LOST` soak testing,
+   and later input/output resource pooling; do not reopen the failed NVIDIA
+   encoder MFT path.
 2. **Hand-rolled Reed-Solomon FEC (Phase 4). Substantially de-risked on
    the algorithmic side, not yet on the network side.** The concern was
    "easy to get subtly wrong in ways that pass casual testing but fail
@@ -340,17 +348,10 @@ real hardware" become an excuse to skip testing the parts that don't.
 
 ## Next step
 
-Phase 0 above: on a real Windows machine with a real GPU, implement
-`RemoteControl.Capture`'s `DesktopDuplicator` and `DisplayEnumerator`,
-`RemoteControl.Codec`'s `HardwareEncoder`/`HardwareDecoder`, and
-`RemoteControl.Render`'s `SwapChainPresenter`, wiring them into
-`tools/LoopbackHarness`.
-
-See [`PHASE-0.md`](PHASE-0.md) for the working plan: it deliberately
-builds them in a different order than that sentence lists (codec first,
-against a synthetic source, since the Media Foundation pipeline is the
-one genuine unknown and capture-first defers the gate's answer until
-everything else exists), splits the exit criteria into the two separate
-questions they actually are, and records the landmines -- including a
-BGRA -> NV12 conversion step that this document omits and that must stay
-GPU-side or the zero-copy property this phase exists to prove is lost.
+Close Phase 0's remaining evidence gap with a PIX capture of the Release
+loop (run with `--no-verify-frame`) and a longer soak that forces display
+mode/fullscreen transitions through `DXGI_ERROR_ACCESS_LOST`. In parallel,
+Phase 1 can start wiring the already-implemented video packetizer and
+depacketizer between two LAN machines. Keep native NVENC as the NVIDIA
+encode path; the failed Media Foundation vendor encoder investigation is
+closed.
