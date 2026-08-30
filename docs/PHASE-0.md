@@ -24,7 +24,9 @@ pixel readback. `RemoteControl.Capture` now provides `DisplayEnumerator`
 and `DesktopDuplicator`; `RemoteControl.Render` provides
 `SwapChainPresenter`. `tools/LoopbackHarness/Program.cs` runs the complete
 live Step 2 loop by default. `--step1` selects the synthetic codec test and
-`--mf-encoder` retains its Media Foundation comparison.
+`--mf-encoder` retains its Media Foundation comparison. `--frames N`
+changes the live presentation target; `--frames 0` runs until the window is
+closed, which is the mode intended for an interactive PIX/Nsight capture.
 
 What is already done and correct: the NuGet references (`Vortice.DXGI`,
 `Vortice.Direct3D11`, `Vortice.MediaFoundation`, all 3.8.3, plus
