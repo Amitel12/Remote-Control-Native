@@ -45,6 +45,8 @@ is closed (client) or Ctrl+C is pressed (host).
 The host sends configuration repeatedly and does not encode its first IDR
 until the client has created its decoder/presenter and returned `Ready`. This
 prevents startup packet loss from stranding the decoder until the next IDR.
+Both roles allow two minutes for this manual startup handshake; the client
+window is intentionally black until configuration arrives.
 Each display-mode rebuild receives a new random session ID, allowing the client
 to discard stale datagrams and recreate its video session at the new size.
 
