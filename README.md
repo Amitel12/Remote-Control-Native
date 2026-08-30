@@ -27,7 +27,7 @@ stream. What's implemented now:
   highest-risk piece in the whole rewrite -- see the risk register),
   video packetizer/depacketizer, STUN client (RFC 5389, verified against
   a real RFC 5769 reference vector), jitter-buffer frame pacer, and
-  LAN-session framing. Its 47 tests include exhaustive K-of-N FEC
+  LAN-session framing. Its 48 tests include exhaustive K-of-N FEC
   reconstruction and a real UDP loopback STUN round trip.
 - **`RemoteControl.Signaling`** -- WebSocket client speaking the updated
   signaling protocol against `amitel12/tests`'s (unchanged) signaling

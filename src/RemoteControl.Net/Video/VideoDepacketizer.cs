@@ -16,7 +16,11 @@ namespace RemoteControl.Net.Video;
 public sealed class VideoDepacketizer
 {
     private const int MaxInProgressFrames = 64;
+    private const uint FrameRetentionWindow = 8;
     private readonly Dictionary<uint, FrameAssembly> _inProgress = new();
+    private uint? _newestFrameIndex;
+
+    public int DroppedIncompleteFrameCount { get; private set; }
 
     /// <summary>
     /// Feeds one received UDP payload (header + shard bytes, as produced by
@@ -29,6 +33,13 @@ public sealed class VideoDepacketizer
         var header = VideoPacketHeader.ReadFrom(packet);
         var shardPayload = packet[VideoPacketHeader.Size..];
         ValidateHeader(header, shardPayload.Length);
+
+        if (_newestFrameIndex is null || header.FrameIndex > _newestFrameIndex.Value)
+        {
+            _newestFrameIndex = header.FrameIndex;
+            if (header.FrameIndex > FrameRetentionWindow)
+                EvictFramesOlderThan(header.FrameIndex - FrameRetentionWindow);
+        }
 
         if (!_inProgress.TryGetValue(header.FrameIndex, out var assembly))
         {
@@ -62,6 +73,7 @@ public sealed class VideoDepacketizer
         foreach (var key in _inProgress.Keys.Where(k => k < frameIndex).ToList())
         {
             _inProgress.Remove(key);
+            DroppedIncompleteFrameCount++;
         }
     }
 

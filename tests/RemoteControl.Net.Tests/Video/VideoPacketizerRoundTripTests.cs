@@ -167,6 +167,23 @@ public class VideoPacketizerRoundTripTests
         Assert.Equal(0, depacketizer.InProgressFrameCount);
     }
 
+    [Fact]
+    public void StaleIncompleteFrame_IsEvictedWhenStreamMovesAhead()
+    {
+        var packetizer = new VideoPacketizer(shardPayloadSize: 1200, parityRatio: 0);
+        var depacketizer = new VideoDepacketizer();
+        var oldPackets = packetizer.Packetize(0, MakeFrame(2000, seed: 40));
+        var newerPackets = packetizer.Packetize(9, MakeFrame(2000, seed: 41));
+
+        depacketizer.AddPacket(oldPackets[0]);
+        Assert.Equal(1, depacketizer.InProgressFrameCount);
+
+        depacketizer.AddPacket(newerPackets[0]);
+
+        Assert.Equal(1, depacketizer.DroppedIncompleteFrameCount);
+        Assert.Equal(1, depacketizer.InProgressFrameCount);
+    }
+
     private static byte[] MakeFrame(int length, int seed)
     {
         var frame = new byte[length];

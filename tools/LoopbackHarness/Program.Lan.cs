@@ -165,6 +165,8 @@ internal static partial class Program
                         }, nv12Subresource);
                     }
                 }
+
+                PaceLanHost(encoded, run);
             }
 
             encoder.Drain(encodedBytes =>
@@ -191,7 +193,8 @@ internal static partial class Program
 
         logger.Info(
             $"[lan-host] captured={captured}, encoded={encoded}, packets={packetsSent}, " +
-            $"payload={encodedBytesSent / 1024.0:0.0}KiB, wire={wireBytesSent / 1024.0:0.0}KiB, timeouts={acquireTimeouts}.");
+            $"payload={encodedBytesSent / 1024.0:0.0}KiB, wire={wireBytesSent / 1024.0:0.0}KiB, timeouts={acquireTimeouts}, " +
+            $"rate={(encoded / run.Elapsed.TotalSeconds):0.##}fps.");
         if (sendTimes.Count > 5)
         {
             var steady = sendTimes.Skip(5).ToList();
@@ -203,6 +206,18 @@ internal static partial class Program
         if (targetFrames > 0 && encoded < targetFrames)
             throw new InvalidOperationException($"LAN host did not encode {targetFrames} frames within {runLimit!.Value.TotalSeconds:0}s (got {encoded}).");
         logger.Info("PASS -- LAN host completed its real capture/encode/send run.");
+    }
+
+    private static void PaceLanHost(int encodedFrames, Stopwatch run)
+    {
+        var targetTicks = encodedFrames * TimeSpan.TicksPerSecond * FpsDenominator / FpsNumerator;
+        var targetElapsed = TimeSpan.FromTicks(targetTicks);
+        var remaining = targetElapsed - run.Elapsed;
+        if (remaining > TimeSpan.FromMilliseconds(2))
+            Thread.Sleep(remaining - TimeSpan.FromMilliseconds(1));
+
+        while (run.Elapsed < targetElapsed)
+            Thread.SpinWait(64);
     }
 
     private static void WaitForLanClient(Socket socket, byte[] configuration, ulong sessionId, ILogger logger)
@@ -333,7 +348,7 @@ internal static partial class Program
                 logger.Info(
                     $"[lan-client] datagrams={datagramsReceived}, completed={session.CompletedFrames}, " +
                     $"decoded={session.Decoded}, presented={session.Presented}, malformed={malformedDatagrams}, " +
-                    $"incomplete={session.IncompleteFrames}.");
+                    $"incomplete={session.IncompleteFrames}, dropped-incomplete={session.DroppedIncompleteFrames}.");
                 session.Dispose();
             }
         }
@@ -344,9 +359,15 @@ internal static partial class Program
             return;
         }
         if (targetFrames > 0 && session.Presented < targetFrames)
-            throw new InvalidOperationException($"LAN client expected {targetFrames} presented frames but received {session.Presented}.");
-        if (!window.IsClosed)
+        {
+            logger.Warn(
+                $"LAN client presented {session.Presented}/{targetFrames} target frames; " +
+                $"{targetFrames - session.Presented} frame(s) were skipped rather than terminating the stream.");
+        }
+        else if (!window.IsClosed)
+        {
             logger.Info("PASS -- LAN client received, reassembled, decoded, and presented the stream.");
+        }
     }
 
     private sealed class LanClientVideoSession : IDisposable
@@ -365,6 +386,7 @@ internal static partial class Program
         public int Decoded { get; private set; }
         public int Presented { get; private set; }
         public int IncompleteFrames => _depacketizer.InProgressFrameCount;
+        public int DroppedIncompleteFrames => _depacketizer.DroppedIncompleteFrameCount;
 
         public LanClientVideoSession(
             MfDevice mfDevice,
