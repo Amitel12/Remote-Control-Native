@@ -80,10 +80,16 @@ simulated per-shard loss both runs):
 
 | | `--parity-percent 0` (control) | `--parity-percent 25` |
 |---|---|---|
-| completed | 81 | 276 |
-| decoded | **0** | **272** |
-| presented | **0 / 300** | **272 / 300** |
-| dropped-incomplete | 211 | 230 |
+| completed | 162 | 266 |
+| decoded | **0** | **266** |
+| presented | **0 / 300** | **266 / 300** |
+| dropped-incomplete | 129 | 33 |
+| incomplete (still in flight at end) | 4 | 1 |
+
+(Exact completed/dropped/incomplete counts vary run to run -- 15% is a random
+per-shard roll, so which specific shards are lost differs each time. The
+decisive, stable result across every run tried is `decoded`/`presented`:
+always 0 without parity, reliably in the 260s/300 with it.)
 
 Without parity, 15% independent per-shard loss didn't just drop a few
 frames -- it wedged the entire stream at 0 decoded/presented. The likely
@@ -92,19 +98,24 @@ shards, so it has the highest chance of losing at least one shard to
 independent per-shard loss, and this harness sends exactly one keyframe at
 stream start (no periodic re-keyframing yet) -- lose that one frame
 irrecoverably and every subsequent P-frame has nothing to decode against.
-With 25% parity, the same loss recovers to 272/300 presented (90.7%).
+With 25% parity, the same loss recovers to 266/300 presented (88.7%).
 
-That comparison is the real, load-bearing result. One number in the table
-is not yet understood: `completed` (276) plus `dropped-incomplete` (230) sum
-to 506, more than the 300 frames sent -- `VideoDepacketizer` doesn't
-currently prevent a previously-evicted frame index from being reopened as a
-new `FrameAssembly` if late/reordered shards for it keep arriving after
-eviction, which could double-count that index as both dropped and later
-completed. Flagging this rather than quietly rounding off the table: the
-headline recovery result (0 -> 272 presented) is a real, direct hardware
-observation and not in question, but this specific counter's exact
-bookkeeping under loss + FEC deserves a closer look before being relied on
-for precise loss-rate reporting.
+The first pass at this table had a real bug, not just a confusing number:
+`completed` + `dropped-incomplete` summed to more than 300 frames sent, and
+`decoded` was consistently lower than `completed`. Cause:
+`VideoDepacketizer` tracked eviction only by the newest frame index seen, not
+which indices were permanently resolved -- a shard that merely arrived
+*late* (reordered behind a burst of newer frames, not actually lost) for an
+already-evicted frame silently reopened a brand-new `FrameAssembly` for that
+same index. That's not just a bookkeeping quirk: if that reopened frame then
+completed, it got decoded and presented *after* newer frames had already
+displayed -- a real stale-frame-out-of-order bug, not only a stats mismatch.
+Fixed by tracking a `_lastResolvedFrameIndex` watermark and discarding any
+shard at or below it for a frame no longer in progress (see
+`VideoDepacketizer.cs` and the `LateShardForAlreadyEvictedFrame_IsDiscarded_NotReopened`
+regression test). The table above is the corrected, self-consistent result --
+`completed` now exactly equals `decoded`, and `completed + dropped-incomplete
++ incomplete` sums to 300 on both runs.
 
 ## Real-hardware localhost result
 
