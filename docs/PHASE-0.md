@@ -13,16 +13,22 @@ lands.
 
 `RemoteControl.Codec` now has Step 0 (`MftProbe`) and Step 1's codec
 components (`MfDevice`, `AsyncTransform`, `ColorConverter`,
-`HardwareEncoder`, `HardwareDecoder`, `D3DSample`, `Nv12Readback`,
-`Interop/CodecApi.cs`) -- see the Step 1 write-up below for what each does
-and what real hardware forced them to become. `RemoteControl.Capture` and
-`RemoteControl.Render` still contain no source files, only a `.csproj`
-each -- that's Step 2. `tools/LoopbackHarness/Program.cs` now runs Step 0
-then Step 1 in sequence.
+`HardwareEncoder`, `NvencEncoder`, `HardwareDecoder`, `D3DSample`,
+`Nv12Readback`, `Interop/CodecApi.cs`) -- see the Step 1 write-up below for
+what each does and what real hardware forced them to become.
+`NvencEncoder` is the working encode-side hardware path: it drives NVIDIA's
+native NVENCODE API with the existing D3D11 NV12 texture and its real
+subresource index, bypassing the unusable NVIDIA encoder MFT without a CPU
+pixel readback. `RemoteControl.Capture` and `RemoteControl.Render` still
+contain no source files, only a `.csproj` each -- that's Step 2.
+`tools/LoopbackHarness/Program.cs` runs Step 0 then Step 1 at 1080p60,
+defaulting to native NVENC; `--mf-encoder` retains the Media Foundation
+comparison.
 
 What is already done and correct: the NuGet references (`Vortice.DXGI`,
-`Vortice.Direct3D11`, `Vortice.MediaFoundation`, all 3.8.3) and the
-project reference graph. Those don't need revisiting.
+`Vortice.Direct3D11`, `Vortice.MediaFoundation`, all 3.8.3, plus
+`Lennox.NvEncSharp` 2.1.1) and the project reference graph. Those don't
+need revisiting.
 
 ## What has to be built
 
@@ -41,6 +47,11 @@ Two components remain, both Step 2 (`DesktopDuplicator` and
   MFT. Tries the hardware (NVIDIA) encoder first as designed; falls back
   to the software H.264 encoder MFT on this machine, where the hardware
   one never becomes usable -- see Step 1 findings 1-3.
+- **`NvencEncoder`** (`Codec`, done) -- native NVIDIA NVENCODE API fallback.
+  Registers and maps the exact D3D11 NV12 texture slice produced by the
+  color converter, encodes synchronously with zero B-frames, reads back only
+  the compressed H.264 bitstream, then unmaps/unregisters the texture. Proven
+  on the RTX 3070 at 1080p60; see "Native NVENC fallback" below.
 - **`HardwareDecoder`** (`Codec`, done) -- H.264 decoder MFT, output as
   D3D11 textures, no CPU readback. Zero-copy confirmed for real -- see
   Step 1 findings 5 and "Decode-side zero-copy" below.
@@ -224,13 +235,41 @@ doing real D3D11/DXVA hardware acceleration internally -- the "hardware
 MFTs are async" landmine below turned out to describe the vendor encoder
 specifically, not every D3D11-aware MFT.
 
-**Encode-side zero-copy: not usable on this hardware.** Findings 1-3
-above are the complete, direct answer to this phase's other main
-question. `ARCHITECTURE.md`'s contingency for exactly this outcome
-("fall back to vendor-specific NVENC") is the live option -- NVIDIA's
-native NVENC SDK is a different, non-Media-Foundation API surface, so it
-is not affected by anything found here. That is now the concrete next
-investigation for the encode half of the pipeline, not a re-run of Step 1.
+**Encode-side zero-copy through Media Foundation: not usable on this
+hardware.** Findings 1-3 above are the complete, direct answer for the
+NVIDIA encoder MFT. Do not retry that API path. `ARCHITECTURE.md`'s
+contingency for this outcome -- NVIDIA's native NVENCODE API -- has now
+been implemented and proven separately below.
+
+**Native NVENC fallback: CONFIRMED working on the RTX 3070.**
+`NvencEncoder` uses `Lennox.NvEncSharp` 2.1.1 (NVENCODE API 12.2) to open a
+DirectX encode session against the same D3D11 device used by the color
+converter and decoder. For every frame it passes the converter's actual
+`ID3D11Texture2D` plus its actual `SubResourceIndex` to
+`NvEncRegisterResource`, maps it, submits it as NV12, locks the compressed
+H.264 Annex-B output, then unmaps and unregisters it. There is no NV12
+readback or upload in this path; the only CPU copy is the compressed
+bitstream that must go to the network/decoder. The retained
+`HardwareEncoder` path still does the deliberate `Nv12Readback` and remains
+available with `--mf-encoder` for comparison.
+
+Real Release run, 1920x1080 at 60fps, 180 synthetic frames, 5-frame warmup:
+
+- P1 ultra-low-latency, CBR, IPPP, zero reorder delay: **2.583ms average
+  encode** (2.112ms min, 5.029ms max); **0.112ms average decode**; 180/180
+  frames encoded and decoded.
+- P4 high-quality, CBR, still forced IPPP so resource lifetime stays
+  synchronous: **2.942ms average encode** (2.092ms min, 3.446ms max);
+  **0.108ms average decode**; 180/180 frames encoded and decoded.
+
+The decoded PNG was read back once and visually matched the synthetic dark
+background plus orange moving rectangle. The low-latency path is therefore
+both faster than the P4 IPPP comparison on this run and pixel-correct. This
+is not yet a true "NVENC defaults with B-frames" comparison: supporting
+reordering requires a pool that keeps multiple registered input textures
+and output buffers alive until delayed outputs are returned. The current
+comparison deliberately keeps `FrameIntervalP = 1` in both modes so every
+input texture can be released only after its synchronous output is locked.
 
 **Low-latency vs. defaults, measured** (software H.264 encoder MFT, 1080p,
 90 synthetic frames, steady-state after a 5-frame warmup): low-latency
@@ -266,21 +305,24 @@ wasn't:
    -- and getting a genuinely correct-looking PNG took two real bugs to
    find first (Step 1 findings 5 and 6 above), since a wrong-but-plausible
    image is a worse failure mode than an obvious crash.
-2. **Are there CPU copies?** Only answerable in a GPU debugger (PIX).
+2. **Are there CPU copies?** Only fully answerable in a GPU debugger (PIX).
    Step 1's readback scaffold would mask the answer, so remove it before
-   measuring. **Not yet answered** -- Step 1 confirms the *API-level*
-   contract (D3D11 textures in and out, `IMFDXGIBuffer` on every decoded
-   sample) but a PIX capture confirming zero CPU-side copies in practice is
-   still open, and more urgent now on the encode side specifically, since
-   Step 1's working path there is a system-memory encoder MFT with a
-   deliberate CPU readback (`Nv12Readback`) -- not zero-copy at all. See
-   "Encode-side zero-copy" above.
+   measuring. **API-level contract now answered for native NVENC; PIX still
+   open.** The native path registers the D3D11 NV12 texture directly and
+   decoded output is an `IMFDXGIBuffer`; it never calls `Nv12Readback`. A PIX
+   capture is still required to prove the driver does not make a hidden CPU
+   pixel copy internally. The `--mf-encoder` software fallback intentionally
+   does call `Nv12Readback` and is not a zero-copy path. See "Native NVENC
+   fallback" above.
 
-Also required by the gate: that zero-B-frames/IPPP + `MF_LOW_LATENCY`
-measurably beats defaults. That is a *comparison*, so keep the default
-configuration runnable rather than deleting it once low-latency mode
-works. **Measured for Step 1** (software encoder path -- see above); not
-yet measured against the hardware encoder, which Step 1 never reached.
+Also required by the gate: that zero-B-frames/IPPP plus low-latency tuning
+measurably beats defaults. That is a *comparison*, so keep comparison modes
+runnable rather than deleting them once low latency works. **Native NVENC
+P1 ultra-low-latency beats P4 high-quality with both forced to IPPP in the
+first 1080p60 run (2.583ms vs. 2.942ms average).** A true default/B-frame
+NVENC comparison remains open for the resource-pool reason above. The older
+software MFT low-latency/default comparison is still runnable with
+`--mf-encoder`.
 
 ## Known landmines
 

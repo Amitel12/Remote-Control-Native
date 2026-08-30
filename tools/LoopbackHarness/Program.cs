@@ -19,9 +19,9 @@ internal static class Program
 {
     private const uint Width = 1920;
     private const uint Height = 1080;
-    private const uint FpsNumerator = 30;
+    private const uint FpsNumerator = 60;
     private const uint FpsDenominator = 1;
-    private const int FrameCount = 90; // 3s at 30fps -- enough to warm up and get a stable latency average.
+    private const int FrameCount = 180; // 3s at 60fps -- Phase 0's target cadence, with enough frames for a stable latency average.
 
     private static int Main(string[] args)
     {
@@ -44,7 +44,10 @@ internal static class Program
         Vortice.MediaFoundation.MediaFactory.MFStartup(false).CheckError();
         try
         {
-            RunStep1(logger, verifyFrame: !args.Contains("--no-verify-frame"));
+            RunStep1(
+                logger,
+                verifyFrame: !args.Contains("--no-verify-frame"),
+                useNativeNvenc: !args.Contains("--mf-encoder"));
         }
         catch (Exception ex)
         {
@@ -143,25 +146,35 @@ internal static class Program
         return false;
     }
 
-    private static void RunStep1(ILogger logger, bool verifyFrame)
+    private static void RunStep1(ILogger logger, bool verifyFrame, bool useNativeNvenc)
     {
         Console.WriteLine();
         logger.Info("Phase 0 / Step 1 -- codec against a synthetic D3D11 texture (no capture, no swap chain).");
+        logger.Info(useNativeNvenc
+            ? "Encode path: NVIDIA native NVENCODE API (use --mf-encoder for the retained Media Foundation comparison)."
+            : "Encode path: Media Foundation encoder MFT comparison.");
         Console.WriteLine();
 
         using var mfDevice = MfDevice.Create(logger);
         using var source = new SyntheticSource(mfDevice.Device, mfDevice.ImmediateContext, Width, Height);
 
-        RunConfiguration(logger, mfDevice, source, lowLatency: true, verifyFrame);
-        RunConfiguration(logger, mfDevice, source, lowLatency: false, verifyFrame: false);
+        RunConfiguration(logger, mfDevice, source, lowLatency: true, verifyFrame, useNativeNvenc);
+        RunConfiguration(logger, mfDevice, source, lowLatency: false, verifyFrame: false, useNativeNvenc);
     }
 
-    private static void RunConfiguration(ILogger logger, MfDevice mfDevice, SyntheticSource source, bool lowLatency, bool verifyFrame)
+    private static void RunConfiguration(
+        ILogger logger, MfDevice mfDevice, SyntheticSource source,
+        bool lowLatency, bool verifyFrame, bool useNativeNvenc)
     {
         Console.WriteLine();
-        logger.Info($"--- Configuration: {(lowLatency ? "low-latency (IPPP, MF_LOW_LATENCY)" : "encoder defaults")} ---");
+        logger.Info($"--- Configuration: {(lowLatency ? "low-latency IPPP" : "quality/default comparison IPPP")} ---");
 
-        using var encoder = new HardwareEncoder(mfDevice, Width, Height, FpsNumerator, FpsDenominator, lowLatency, logger: logger);
+        using var nvencEncoder = useNativeNvenc
+            ? new NvencEncoder(mfDevice, Width, Height, FpsNumerator, FpsDenominator, lowLatency, logger: logger)
+            : null;
+        using var mfEncoder = useNativeNvenc
+            ? null
+            : new HardwareEncoder(mfDevice, Width, Height, FpsNumerator, FpsDenominator, lowLatency, logger: logger);
         using var colorConverter = new ColorConverter(mfDevice, Width, Height, logger: logger);
         using var decoder = new HardwareDecoder(mfDevice, Width, Height, FpsNumerator, FpsDenominator, logger);
 
@@ -180,7 +193,7 @@ internal static class Program
             using var nv12Owned = nv12;
 
             sw.Restart();
-            encoder.Encode(mfDevice, nv12, encoded =>
+            void OnEncoded(byte[] encoded)
             {
                 sw.Stop();
                 encodeLatenciesMs.Add(sw.Elapsed.TotalMilliseconds);
@@ -204,21 +217,37 @@ internal static class Program
 
                     decoded.Texture.Dispose();
                 });
-            }, nv12Subresource);
+            }
+
+            if (nvencEncoder is not null)
+                nvencEncoder.Encode(nv12, OnEncoded, nv12Subresource);
+            else
+                mfEncoder!.Encode(mfDevice, nv12, OnEncoded, nv12Subresource);
         }
 
-        encoder.Drain(encoded =>
+        void OnDrained(byte[] encoded)
         {
             compressedSizes.Add(encoded.Length);
             decoder.Decode(encoded, decoded => { framesDecoded++; decoded.Texture.Dispose(); });
-        });
+        }
+
+        if (nvencEncoder is not null)
+            nvencEncoder.Drain(OnDrained);
+        else
+            mfEncoder!.Drain(OnDrained);
         decoder.Drain(decoded => { framesDecoded++; decoded.Texture.Dispose(); });
 
-        Report(logger, lowLatency, encoder.UsingHardware, encodeLatenciesMs, decodeLatenciesMs, compressedSizes, framesDecoded);
+        var encoderLabel = nvencEncoder is not null
+            ? "NATIVE NVIDIA NVENC (D3D11 input)"
+            : mfEncoder!.UsingHardware
+                ? "MEDIA FOUNDATION HARDWARE"
+                : "MEDIA FOUNDATION SOFTWARE FALLBACK -- hardware MFT never accepted input, see docs/PHASE-0.md";
+        var modeLabel = lowLatency ? "low-latency" : useNativeNvenc ? "quality-ippp" : "defaults";
+        Report(logger, modeLabel, encoderLabel, encodeLatenciesMs, decodeLatenciesMs, compressedSizes, framesDecoded);
     }
 
     private static void Report(
-        ILogger logger, bool lowLatency, bool usingHardwareEncoder,
+        ILogger logger, string modeLabel, string encoderLabel,
         List<double> encodeLatenciesMs, List<double> decodeLatenciesMs, List<int> compressedSizes, int framesDecoded)
     {
         // Skip the first few frames: encoder/decoder pipelining means early
@@ -227,16 +256,16 @@ internal static class Program
         var steadyEncode = encodeLatenciesMs.Skip(warmup).ToList();
         var steadyDecode = decodeLatenciesMs.Skip(warmup).ToList();
 
-        logger.Info($"[{(lowLatency ? "low-latency" : "defaults")}] encoder: {(usingHardwareEncoder ? "HARDWARE" : "SOFTWARE FALLBACK -- hardware encoder never accepted input, see docs/PHASE-0.md")}");
-        logger.Info($"[{(lowLatency ? "low-latency" : "defaults")}] frames encoded: {encodeLatenciesMs.Count}, decoded: {framesDecoded}");
+        logger.Info($"[{modeLabel}] encoder: {encoderLabel}");
+        logger.Info($"[{modeLabel}] frames encoded: {encodeLatenciesMs.Count}, decoded: {framesDecoded}");
         if (steadyEncode.Count > 0)
-            logger.Info($"[{(lowLatency ? "low-latency" : "defaults")}] encode latency avg={steadyEncode.Average():0.###}ms " +
+            logger.Info($"[{modeLabel}] encode latency avg={steadyEncode.Average():0.###}ms " +
                         $"min={steadyEncode.Min():0.###}ms max={steadyEncode.Max():0.###}ms (n={steadyEncode.Count}, warmup skipped)");
         if (steadyDecode.Count > 0)
-            logger.Info($"[{(lowLatency ? "low-latency" : "defaults")}] decode latency avg={steadyDecode.Average():0.###}ms " +
+            logger.Info($"[{modeLabel}] decode latency avg={steadyDecode.Average():0.###}ms " +
                         $"min={steadyDecode.Min():0.###}ms max={steadyDecode.Max():0.###}ms (n={steadyDecode.Count}, warmup skipped)");
         if (compressedSizes.Count > 0)
-            logger.Info($"[{(lowLatency ? "low-latency" : "defaults")}] avg compressed frame size: {compressedSizes.Average():0}B " +
+            logger.Info($"[{modeLabel}] avg compressed frame size: {compressedSizes.Average():0}B " +
                         $"({compressedSizes.Average() * 8 * FpsNumerator / FpsDenominator / 1_000_000.0:0.##}Mbps @ {FpsNumerator}fps)");
     }
 }

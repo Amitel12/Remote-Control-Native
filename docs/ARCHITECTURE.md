@@ -55,12 +55,14 @@ Researched and settled during planning:
   `Vortice.DXGI`) -- the actively-maintained SharpDX successor -- for DXGI
   Desktop Duplication API (`IDXGIOutputDuplication.AcquireNextFrame` ->
   `ID3D11Texture2D`, GPU-resident, no CPU copy).
-- **Encode/decode**: `Vortice.MediaFoundation` driving Media Foundation
-  hardware H.264 encoder/decoder MFTs (`IMFTransform`) -- vendor-agnostic
-  (one code path across NVIDIA/AMD/Intel). Vendor-specific NVENC
-  (`NvEncSharp`, thin/rough) is a later optimization, not v1. Decoder MFTs
-  support D3D11-aware zero-copy output straight into textures presented
-  via a swap chain -- no CPU readback anywhere in the pipeline.
+- **Encode/decode**: `Vortice.MediaFoundation` remains the vendor-agnostic
+  decoder path and the intended AMD/Intel encoder path, but the NVIDIA
+  encoder MFT proved unusable on the RTX 3070. NVIDIA encoding therefore
+  uses the implemented native `NvencEncoder` (`Lennox.NvEncSharp`), which
+  accepts the same D3D11 NV12 texture directly. The Microsoft H.264 decoder
+  MFT supports D3D11-aware output straight into textures presented via a
+  swap chain. See `docs/PHASE-0.md` for the real-hardware findings and the
+  still-open PIX check for hidden driver-side copies.
 - **Transport**: hand-rolled STUN client + simultaneous-open UDP
   hole-punching (~200-400 lines, the same approach Parsec's own BUD
   protocol uses, ~97% P2P success without TURN) over the existing
@@ -209,13 +211,14 @@ Ordered so the two highest-risk unknowns surface first, not last.
    accept input at all via any documented driving mechanism, confirmed
    after eliminating every pipeline-side cause. `HardwareEncoder` falls
    back to the software H.264 encoder MFT (proven correct against the same
-   pipeline) so the rest of Phase 0 can still be measured. This is exactly
-   the contingency named below -- **the next concrete investigation is
-   NVIDIA's native NVENC SDK** (a different, non-Media-Foundation API
-   surface) for the encode half specifically, not another pass at the MF
-   encoder MFT. Zero-CPU-copy verification via GPU debugging/PIX is still
-   open (see `docs/PHASE-0.md`, "Exit criteria"). Needs a real Windows
-   machine with a real GPU; cannot be written or verified blind.
+   pipeline) for comparison. The named contingency has now also been proven:
+   **`NvencEncoder` drives NVIDIA's native NVENCODE API successfully with
+   D3D11 NV12 input on the RTX 3070**, producing pixel-correct output and
+   encoding 180/180 frames at 1080p60. The first Release run averaged
+   2.583ms encode with P1 ultra-low-latency IPPP versus 2.942ms with P4
+   high-quality IPPP. PIX verification of no hidden driver-side CPU copy is
+   still open (see `docs/PHASE-0.md`, "Exit criteria"). Step 2 capture and
+   presentation are now the actual next work.
 2. **Phase 1 -- LAN UDP streaming, two machines, no NAT traversal.**
    `EnetTransport` with a hardcoded LAN address, `VideoPacketizer`/
    `VideoDepacketizer` (already implemented, see above) wired in, no FEC
@@ -279,10 +282,13 @@ Ordered so the two highest-risk unknowns surface first, not last.
    anymore. The actual finding: decode-side D3D11 zero-copy genuinely
    works on this hardware; encode-side does not -- the vendor (NVIDIA)
    H.264 encoder MFT never becomes usable via Media Foundation on this
-   machine, independent of how carefully the D3D11 interop is done. The
-   risk this item named has *happened*, not just remained open, and its
-   contingency (vendor-specific NVENC, see `docs/PHASE-0.md`) is now the
-   live plan for the encode half specifically.
+   machine, independent of how carefully the D3D11 interop is done. That
+   risk happened on the Media Foundation path, but its contingency is now
+   proven: native NVENC accepts the same GPU-resident D3D11 NV12 texture
+   (including the real subresource index), encodes pixel-correct H.264 at
+   1080p60, and feeds the already-proven D3D11 decoder. Remaining work for
+   this risk is PIX verification and later input/output resource pooling;
+   do not reopen the failed NVIDIA encoder MFT path.
 2. **Hand-rolled Reed-Solomon FEC (Phase 4). Substantially de-risked on
    the algorithmic side, not yet on the network side.** The concern was
    "easy to get subtly wrong in ways that pass casual testing but fail
