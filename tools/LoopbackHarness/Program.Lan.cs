@@ -16,8 +16,6 @@ namespace RemoteControl.Tools.LoopbackHarness;
 internal static partial class Program
 {
     private const int LanReceiveBufferSize = 4 * 1024 * 1024;
-    private const int LanHandshakeTimeoutSeconds = 120;
-    private const int LanInitialConfigurationTimeoutSeconds = 120;
 
     private static string? ReadOption(string[] args, string option)
     {
@@ -209,17 +207,17 @@ internal static partial class Program
 
     private static void WaitForLanClient(Socket socket, byte[] configuration, ulong sessionId, ILogger logger)
     {
-        logger.Info("Waiting for the LAN client handshake before sending the first IDR frame.");
-        var deadline = Stopwatch.StartNew();
+        logger.Info("Waiting indefinitely for the LAN client handshake before sending the first IDR frame (Ctrl+C to stop).");
+        var waiting = Stopwatch.StartNew();
         var nextSend = TimeSpan.Zero;
         var receiveBuffer = new byte[256];
 
-        while (deadline.Elapsed < TimeSpan.FromSeconds(LanHandshakeTimeoutSeconds))
+        while (true)
         {
-            if (deadline.Elapsed >= nextSend)
+            if (waiting.Elapsed >= nextSend)
             {
                 socket.Send(configuration);
-                nextSend = deadline.Elapsed + TimeSpan.FromMilliseconds(250);
+                nextSend = waiting.Elapsed + TimeSpan.FromMilliseconds(250);
             }
 
             if (!socket.Poll(50_000, SelectMode.SelectRead))
@@ -234,10 +232,6 @@ internal static partial class Program
                 return;
             }
         }
-
-        throw new TimeoutException(
-            $"No ready response arrived from the LAN client within {LanHandshakeTimeoutSeconds} seconds. " +
-            "Start --lan-client first and check the endpoint/firewall.");
     }
 
     private static void RunLanClient(ILogger logger, int listenPort, int targetFrames, bool verifyFrame)
@@ -282,11 +276,8 @@ internal static partial class Program
 
                 if (!socket.Poll(10_000, SelectMode.SelectRead))
                 {
-                    var idleLimit = session is null
-                        ? TimeSpan.FromSeconds(LanInitialConfigurationTimeoutSeconds)
-                        : TimeSpan.FromSeconds(10);
-                    if (run.Elapsed - lastPacket > idleLimit)
-                        throw new TimeoutException($"LAN client received no {(session is null ? "configuration" : "video")} for {idleLimit.TotalSeconds:0} seconds.");
+                    if (session is not null && run.Elapsed - lastPacket > TimeSpan.FromSeconds(10))
+                        throw new TimeoutException("LAN client received no video for 10 seconds after the stream started.");
                     continue;
                 }
 
@@ -348,7 +339,10 @@ internal static partial class Program
         }
 
         if (session is null)
-            throw new InvalidOperationException("LAN client stopped before receiving a valid stream configuration.");
+        {
+            logger.Warn("LAN client window was closed before a host connected.");
+            return;
+        }
         if (targetFrames > 0 && session.Presented < targetFrames)
             throw new InvalidOperationException($"LAN client expected {targetFrames} presented frames but received {session.Presented}.");
         if (!window.IsClosed)
