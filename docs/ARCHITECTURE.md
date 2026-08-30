@@ -61,8 +61,7 @@ Researched and settled during planning:
   uses the implemented native `NvencEncoder` (`Lennox.NvEncSharp`), which
   accepts the same D3D11 NV12 texture directly. The Microsoft H.264 decoder
   MFT supports D3D11-aware output straight into textures presented via a
-  swap chain. See `docs/PHASE-0.md` for the real-hardware findings and the
-  still-open PIX check for hidden driver-side copies.
+  swap chain. See `docs/PHASE-0.md` for the real-hardware and Nsight findings.
 - **Transport**: hand-rolled STUN client + simultaneous-open UDP
   hole-punching (~200-400 lines, the same approach Parsec's own BUD
   protocol uses, ~97% P2P success without TURN) over the existing
@@ -215,11 +214,13 @@ Ordered so the two highest-risk unknowns surface first, not last.
    D3D11 NV12 input on the RTX 3070**, producing pixel-correct output and
    encoding 180/180 frames at 1080p60. The first Release run averaged
    2.583ms encode with P1 ultra-low-latency IPPP versus 2.942ms with P4
-   high-quality IPPP. PIX verification of no hidden driver-side CPU copy is
-   still open (see `docs/PHASE-0.md`, "Exit criteria"). Step 2 then completed
-   the real desktop path: 315 frames captured/encoded/decoded and 300
-   presented in the Release acceptance run, with 3.064ms average steady
-   capture-to-`Present` callback latency. A separate run exercised live
+   high-quality IPPP. An Nsight Systems trace confirms zero steady-state
+   device-to-system or system-to-device pixel transfers and shows dedicated
+   NVENC/NVDEC H.264 engine work for every frame. Step 2 then completed the
+   real desktop path. With capture and presentation separated across two
+   displays, 316 frames were captured/encoded/decoded and 301 presented,
+   with 2.923ms average steady capture-to-`Present` callback latency. A
+   separate run exercised live
    `ResizeBuffers` plus minimize/restore and continued to completion. The
    one necessary capture bridge is a GPU `CopyResource` from the bindless
    Desktop Duplication surface into a reusable render-target texture; no
@@ -294,9 +295,8 @@ Ordered so the two highest-risk unknowns surface first, not last.
    1080p60, and feeds the already-proven D3D11 decoder.
    `SwapChainPresenter` now also consumes the decoder's real texture-array
    slice directly through the D3D11 video processor. Remaining work for this
-   risk is PIX verification, longer `DXGI_ERROR_ACCESS_LOST` soak testing,
-   and later input/output resource pooling; do not reopen the failed NVIDIA
-   encoder MFT path.
+   risk is longer `DXGI_ERROR_ACCESS_LOST` soak testing and later input/output
+   resource pooling; do not reopen the failed NVIDIA encoder MFT path.
 2. **Hand-rolled Reed-Solomon FEC (Phase 4). Substantially de-risked on
    the algorithmic side, not yet on the network side.** The concern was
    "easy to get subtly wrong in ways that pass casual testing but fail
@@ -348,10 +348,10 @@ real hardware" become an excuse to skip testing the parts that don't.
 
 ## Next step
 
-Close Phase 0's remaining evidence gap with a PIX capture of the Release
-loop (run with `--no-verify-frame`) and a longer soak that forces display
-mode/fullscreen transitions through `DXGI_ERROR_ACCESS_LOST`. In parallel,
-Phase 1 can start wiring the already-implemented video packetizer and
-depacketizer between two LAN machines. Keep native NVENC as the NVIDIA
-encode path; the failed Media Foundation vendor encoder investigation is
-closed.
+Run a longer resilience soak that forces display-mode/fullscreen transitions
+through `DXGI_ERROR_ACCESS_LOST`, then start Phase 1 by wiring the
+already-implemented video packetizer and depacketizer between two LAN
+machines. Phase 0's correctness, throughput, hardware-engine use, and
+driver-visible GPU residency gates are now answered. Keep native NVENC as
+the NVIDIA encode path; the failed Media Foundation vendor encoder and PIX
+investigations are closed.
