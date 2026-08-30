@@ -16,7 +16,8 @@ namespace RemoteControl.Tools.LoopbackHarness;
 internal static partial class Program
 {
     private const int LanReceiveBufferSize = 4 * 1024 * 1024;
-    private const int LanHandshakeTimeoutSeconds = 10;
+    private const int LanHandshakeTimeoutSeconds = 120;
+    private const int LanInitialConfigurationTimeoutSeconds = 120;
 
     private static string? ReadOption(string[] args, string option)
     {
@@ -257,6 +258,7 @@ internal static partial class Program
         };
         socket.Bind(new IPEndPoint(IPAddress.Any, listenPort));
         logger.Info($"LAN client bound to {socket.LocalEndPoint}; start the host with --lan-host <this-PC-ip>:{listenPort}.");
+        logger.Info("The presentation window stays black until a host completes the handshake.");
 
         var receiveBuffer = new byte[ushort.MaxValue + 1];
         EndPoint source = new IPEndPoint(IPAddress.Any, 0);
@@ -280,7 +282,9 @@ internal static partial class Program
 
                 if (!socket.Poll(10_000, SelectMode.SelectRead))
                 {
-                    var idleLimit = session is null ? TimeSpan.FromSeconds(15) : TimeSpan.FromSeconds(10);
+                    var idleLimit = session is null
+                        ? TimeSpan.FromSeconds(LanInitialConfigurationTimeoutSeconds)
+                        : TimeSpan.FromSeconds(10);
                     if (run.Elapsed - lastPacket > idleLimit)
                         throw new TimeoutException($"LAN client received no {(session is null ? "configuration" : "video")} for {idleLimit.TotalSeconds:0} seconds.");
                     continue;
