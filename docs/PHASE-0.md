@@ -26,7 +26,7 @@ and `DesktopDuplicator`; `RemoteControl.Render` provides
 live Step 2 loop by default. `--step1` selects the synthetic codec test and
 `--mf-encoder` retains its Media Foundation comparison. `--frames N`
 changes the live presentation target; `--frames 0` runs until the window is
-closed, which is the mode intended for an interactive PIX/Nsight capture.
+closed, which is the mode intended for an interactive Nsight capture.
 
 What is already done and correct: the NuGet references (`Vortice.DXGI`,
 `Vortice.Direct3D11`, `Vortice.MediaFoundation`, all 3.8.3, plus
@@ -302,12 +302,19 @@ GPU-to-GPU copy, not a CPU readback/upload. `SwapChainPresenter` uses the
 D3D11 video processor to convert the decoder's actual NV12 texture-array
 slice to a BGRA flip-discard swap chain.
 
-Real Release run, output 0 at 1920x1080, native NVENC P1, 300 presentation
-target: **315 captured / 315 encoded / 315 decoded / 300 presented**, zero
-acquisition timeouts and zero occlusion/minimize skips. Steady callback
-latency from acquired desktop frame to `Present(syncInterval: 0)` averaged
-**3.064ms** (2.407ms min, 5.324ms max, 5-frame warmup skipped). The one-off
-decoded PNG is a coherent copy of the live desktop.
+On multi-monitor systems, the harness places the presentation window on the
+first output other than the captured output. This prevents the swap chain
+from being captured recursively as a visual hall of mirrors, which keeps
+content complexity and performance measurements representative. A
+single-monitor system falls back to the captured output and logs a warning.
+
+Feedback-free Release run, output 0 captured at 1920x1080 and the window on
+output 1, native NVENC P1, 300 presentation target: **316 captured / 316
+encoded / 316 decoded / 301 presented**, 10 acquisition timeouts and zero
+occlusion/minimize skips. Steady callback latency from acquired desktop
+frame to `Present(syncInterval: 0)` averaged **2.923ms** (2.399ms min,
+3.943ms max, 5-frame warmup skipped). The one-off decoded PNG from the
+earlier correctness run is a coherent copy of the live desktop.
 
 A second Release run with `--exercise-window-state` resized the client from
 1280x720 to 960x540, minimized it for 30 decoded frames, restored it, and
@@ -333,17 +340,19 @@ wasn't:
    image is a worse failure mode than an obvious crash. **Answered for the
    complete Step 2 loop as well:** the one-off PNG is a coherent 1920x1080
    capture of the live desktop after native encode and D3D11 decode.
-2. **Are there CPU copies?** Only fully answerable in a GPU debugger (PIX).
-   Step 1's readback scaffold would mask the answer, so remove it before
-   measuring. **API-level contract now answered for native NVENC; PIX still
-   open.** Capture normalization is a GPU `CopyResource`; color conversion
-   and presentation use D3D11/MF video processing; the native path registers
-   the D3D11 NV12 texture directly and
-   decoded output is an `IMFDXGIBuffer`; it never calls `Nv12Readback`. A PIX
-   capture is still required to prove the driver does not make a hidden CPU
-   pixel copy internally. The `--mf-encoder` software fallback intentionally
-   does call `Nv12Readback` and is not a zero-copy path. See "Native NVENC
-   fallback" above.
+2. **Are there CPU copies? Answered at the driver/ETW-visible level: no
+   steady-state pixel transfers.** An NVIDIA Nsight Systems trace of the
+   Release loop recorded 316 native NVENC H.264 submissions, 632 NVENC
+   engine workloads, 316 NVDEC H.264 engine workloads, and 300 DXGI
+   presents. For `LoopbackHarness.exe`, it recorded zero device-to-system
+   transfers. System-to-device transfers occurred only during initialization
+   (0.707s through 1.873s) and stopped for the remaining frame loop, so there
+   is no per-frame pixel upload. `nvEncLockBitstream` is the expected CPU-side
+   compressed-bitstream access, not a pixel readback. PIX cannot capture this
+   native D3D11/MF/NVENC path: native D3D11 is unsupported and forcing
+   D3D11On12 terminates before GPU work with `E_PIX_CAPTURE_NO_GPU_WORK`.
+   The `--mf-encoder` software fallback intentionally calls `Nv12Readback`
+   and is not a zero-copy path.
 
 Also required by the gate: that zero-B-frames/IPPP plus low-latency tuning
 measurably beats defaults. That is a *comparison*, so keep comparison modes

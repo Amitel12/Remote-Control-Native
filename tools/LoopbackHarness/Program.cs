@@ -114,6 +114,17 @@ internal static class Program
             logger.Info($"Output {display.OutputIndex}: {display.DeviceName}, {display.Width}x{display.Height} at ({display.Left},{display.Top}), {display.Rotation}.");
 
         var selected = displays[0];
+        var presentationDisplay = displays.FirstOrDefault(display => display.OutputIndex != selected.OutputIndex) ?? selected;
+        if (presentationDisplay.OutputIndex == selected.OutputIndex)
+        {
+            logger.Warn("Only one attached output is available; the presentation window will be captured and create visual feedback.");
+        }
+        else
+        {
+            logger.Info($"Presenting on output {presentationDisplay.OutputIndex} ({presentationDisplay.DeviceName}) " +
+                        $"so output {selected.OutputIndex} capture does not include its own window.");
+        }
+
         using var duplicator = new DesktopDuplicator(
             mfDevice.Device,
             mfDevice.ImmediateContext,
@@ -122,7 +133,7 @@ internal static class Program
         if ((duplicator.Width & 1) != 0 || (duplicator.Height & 1) != 0)
             throw new NotSupportedException($"NV12 requires even dimensions; selected output is {duplicator.Width}x{duplicator.Height}.");
 
-        using var window = new PresentationWindow(selected);
+        using var window = new PresentationWindow(presentationDisplay);
         using var presenter = new SwapChainPresenter(
             mfDevice.Device,
             mfDevice.ImmediateContext,
