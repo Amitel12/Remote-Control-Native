@@ -222,7 +222,12 @@ Ordered so the two highest-risk unknowns surface first, not last.
    with 2.923ms average steady capture-to-`Present` callback latency. A
    separate run exercised live
    `ResizeBuffers` plus minimize/restore and continued to completion. The
-   one necessary capture bridge is a GPU `CopyResource` from the bindless
+   `DXGI_ERROR_ACCESS_LOST` path was also forced with live 1920x1080 ->
+   1680x1050 -> 1920x1080 mode changes and rebuilt the complete GPU pipeline at
+   each size. A Win+L secure-desktop transition paused capture and resumed after
+   unlock without terminating the process; both acquire-time and
+   release-time access loss are handled. The one necessary capture bridge is a
+   GPU `CopyResource` from the bindless
    Desktop Duplication surface into a reusable render-target texture; no
    CPU pixel copy is introduced.
 2. **Phase 1 -- LAN UDP streaming, two machines, no NAT traversal.**
@@ -294,9 +299,9 @@ Ordered so the two highest-risk unknowns surface first, not last.
    (including the real subresource index), encodes pixel-correct H.264 at
    1080p60, and feeds the already-proven D3D11 decoder.
    `SwapChainPresenter` now also consumes the decoder's real texture-array
-   slice directly through the D3D11 video processor. Remaining work for this
-   risk is longer `DXGI_ERROR_ACCESS_LOST` soak testing and later input/output
-   resource pooling; do not reopen the failed NVIDIA encoder MFT path.
+   slice directly through the D3D11 video processor. Display-mode and Win+L
+   recovery are now proven on real hardware; later input/output resource
+   pooling remains. Do not reopen the failed NVIDIA encoder MFT path.
 2. **Hand-rolled Reed-Solomon FEC (Phase 4). Substantially de-risked on
    the algorithmic side, not yet on the network side.** The concern was
    "easy to get subtly wrong in ways that pass casual testing but fail
@@ -348,10 +353,10 @@ real hardware" become an excuse to skip testing the parts that don't.
 
 ## Next step
 
-Run a longer resilience soak that forces display-mode/fullscreen transitions
-through `DXGI_ERROR_ACCESS_LOST`, then start Phase 1 by wiring the
-already-implemented video packetizer and depacketizer between two LAN
-machines. Phase 0's correctness, throughput, hardware-engine use, and
-driver-visible GPU residency gates are now answered. Keep native NVENC as
-the NVIDIA encode path; the failed Media Foundation vendor encoder and PIX
-investigations are closed.
+Start Phase 1 by wiring the already-implemented video packetizer and
+depacketizer between two LAN machines. Phase 0's correctness, throughput,
+hardware-engine use, driver-visible GPU residency, display-mode recovery, and
+secure-desktop recovery gates are now answered. Keep native NVENC as the NVIDIA
+encode path; the failed Media Foundation vendor encoder and PIX investigations
+are closed. Fullscreen-exclusive and driver-reset recovery remain useful soak
+coverage rather than blockers for beginning Phase 1.

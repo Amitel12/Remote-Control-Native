@@ -6,10 +6,12 @@
     whole rewrite - prove sustained 60fps 1080p with zero CPU-side texture
     copies and a measurable latency win from zero-B-frames/IPPP +
     MF_LOW_LATENCY before building Phase 1+ on top of these assumptions.
-    Windows-only; cannot be built or run outside a real Windows dev machine.
+    Windows-only; it can be cross-compiled for CI but cannot be run or verified
+    outside a real Windows dev machine.
   -->
   <PropertyGroup>
     <TargetFramework>net8.0-windows</TargetFramework>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <UseWindowsForms>true</UseWindowsForms>
     <Platforms>x64</Platforms>
     <OutputType>Exe</OutputType>

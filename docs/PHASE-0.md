@@ -320,9 +320,15 @@ A second Release run with `--exercise-window-state` resized the client from
 1280x720 to 960x540, minimized it for 30 decoded frames, restored it, and
 continued to completion: **346 captured / 346 encoded / 346 decoded / 301
 presented**, 30 safe minimized skips, no crash or device teardown. The
-`DXGI_ERROR_ACCESS_LOST` recreation path is implemented but was not forced
-in this run; display-mode/fullscreen/UAC transitions still need longer soak
-testing.
+`DXGI_ERROR_ACCESS_LOST` recovery path was then forced on the RTX 3070 / Windows
+11 machine. Changing the captured display from 1920x1080 to 1680x1050 rebuilt
+capture, conversion, NVENC, decode, and presentation at the new dimensions;
+changing it back rebuilt the complete session at 1920x1080. Locking with
+Win+L paused capture while Windows was on the secure desktop and unlocking
+restored capture without terminating the harness. DXGI can report access loss
+from either `AcquireNextFrame` or `ReleaseFrame` when the desktop switch races
+an outstanding frame, so both calls enter the same recovery path. The latter
+case was found only by this real lock/unlock test.
 
 ## Exit criteria are two questions, not one
 
@@ -397,7 +403,11 @@ means nothing on screen changed. It is control flow, not an error. Release
 every acquired frame. `DXGI_ERROR_ACCESS_LOST` needs real re-acquisition
 handling (`ARCHITECTURE.md` risk #5) -- UAC prompts, mode changes, driver
 resets and fullscreen transitions all trigger it, and gaming triggers all
-four.
+four. A desktop switch may instead make `ReleaseFrame` return
+`DXGI_ERROR_ACCESS_LOST`; discard that frame and recreate duplication in the
+same way. `DuplicateOutput` returns `E_ACCESSDENIED` while Win+L has Windows on
+the secure desktop, so retry until the interactive desktop returns rather than
+treating it as fatal.
 
 ## Testing notes
 

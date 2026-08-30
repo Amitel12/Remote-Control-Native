@@ -98,10 +98,30 @@ internal static class Program
         bool exerciseWindowState,
         int targetPresentedFrames)
     {
+        while (true)
+        {
+            try
+            {
+                RunStep2Session(logger, verifyFrame, exerciseWindowState, targetPresentedFrames);
+                return;
+            }
+            catch (DesktopConfigurationChangedException ex)
+            {
+                logger.Warn($"{ex.Message} Rebuilding capture, codec, decoder, and presenter for the new mode.");
+            }
+        }
+    }
+
+    private static void RunStep2Session(
+        ILogger logger,
+        bool verifyFrame,
+        bool exerciseWindowState,
+        int targetPresentedFrames)
+    {
         Console.WriteLine();
         logger.Info("Phase 0 / Step 2 -- live desktop capture -> native NVENC -> D3D11 decode -> swap chain.");
         logger.Info(targetPresentedFrames == 0
-            ? "PIX capture mode: running until the presentation window is closed."
+            ? "Interactive/profiler mode: running until the presentation window is closed."
             : $"Close the presentation window to stop early; the acceptance run targets {targetPresentedFrames} presented frames.");
         Console.WriteLine();
 
