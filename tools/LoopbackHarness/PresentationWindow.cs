@@ -14,13 +14,13 @@ internal sealed class PresentationWindow : IDisposable
     public uint ClientWidth => (uint)Math.Max(_form.ClientSize.Width, 0);
     public uint ClientHeight => (uint)Math.Max(_form.ClientSize.Height, 0);
 
-    public PresentationWindow(DisplayInfo display)
+    public PresentationWindow(DisplayInfo display, string? title = null)
     {
         var width = Math.Min(1280, Math.Max(640, display.Width - 120));
         var height = Math.Min(720, Math.Max(360, display.Height - 160));
         _form = new Form
         {
-            Text = "Remote-Control-Native — Phase 0 live loopback",
+            Text = title ?? "Remote-Control-Native — Phase 0 live loopback",
             StartPosition = FormStartPosition.Manual,
             Location = new Point(display.Left + 60, display.Top + 60),
             ClientSize = new Size(width, height),

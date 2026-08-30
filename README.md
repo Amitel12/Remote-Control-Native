@@ -17,32 +17,30 @@ this app speaks.
 
 ## Status
 
-Scaffolded, not feature-complete. What's actually implemented and tested
-so far -- the pure-logic pieces that don't depend on Windows APIs and can
-be verified in any environment with the .NET SDK:
+Not feature-complete. Phase 0's GPU pipeline is proven on the RTX 3070 / Windows
+11 test machine, and Phase 1 has begun with a proven two-process localhost UDP
+stream. What's implemented now:
 
 - **`RemoteControl.Protocol`** -- the wire message types (both the JSON
   signaling messages and the binary UDP hot-path structs). 19 tests.
 - **`RemoteControl.Net`** -- Reed-Solomon FEC over GF(256) (the single
   highest-risk piece in the whole rewrite -- see the risk register),
   video packetizer/depacketizer, STUN client (RFC 5389, verified against
-  a real RFC 5769 reference vector), and a jitter-buffer frame pacer.
-  39 tests, including exhaustive K-of-N FEC reconstruction and a real UDP
-  loopback STUN round trip.
+  a real RFC 5769 reference vector), jitter-buffer frame pacer, and
+  LAN-session framing. Its 47 tests include exhaustive K-of-N FEC
+  reconstruction and a real UDP loopback STUN round trip.
 - **`RemoteControl.Signaling`** -- WebSocket client speaking the updated
   signaling protocol against `amitel12/tests`'s (unchanged) signaling
   server.
-- **`RemoteControl.Common`** -- minimal logging seam.
+- **`RemoteControl.Capture` / `Codec` / `Render`** -- real D3D11 Desktop
+  Duplication, native NVIDIA NVENC, D3D11-backed H.264 decode, and swap-chain
+  presentation, including display-mode and Win+L recovery.
+- **`tools/LoopbackHarness`** -- Phase 0 loopback plus Phase 1 LAN host/client
+  modes. A 300-frame localhost run passed 300/300 end to end with no incomplete
+  frames; see [`docs/PHASE-1.md`](docs/PHASE-1.md).
 
-Everything else -- `RemoteControl.Capture` (DXGI Desktop Duplication),
-`RemoteControl.Codec` (Media Foundation hardware encode/decode),
-`RemoteControl.Render` (D3D11 presentation), `RemoteControl.Input`
-(SendInput/raw input), `RemoteControl.App` (the WPF shell), and
-`tools/LoopbackHarness` (the Phase 0 capture->encode->decode->render
-proof-of-concept) -- exist as scaffolded, correctly-referenced projects
-with no real implementation yet. That's Phase 0 work and it's the actual
-risk in this rewrite; it needs a real Windows machine with a real GPU to
-write and verify against, which this repo was not scaffolded on.
+`RemoteControl.Input` and the WPF application remain scaffolds. The real
+two-machine LAN run and latency baseline are the next gate.
 
 ## Building
 
@@ -83,9 +81,8 @@ lands under an `x64` path rather than the default one:
 `dotnet run --project src\RemoteControl.App` needs the platform passed
 explicitly to match, i.e. `-p:Platform=x64`.
 
-What you get today is the placeholder shell described under Status -- a
-window and nothing behind it. The pipeline work happens in
-`tools/LoopbackHarness` first; see `docs/ARCHITECTURE.md`.
+The WPF shell is still a placeholder. Run the proven pipeline and LAN modes
+through `tools/LoopbackHarness`; see `docs/PHASE-0.md` and `docs/PHASE-1.md`.
 
 ## Gotchas
 

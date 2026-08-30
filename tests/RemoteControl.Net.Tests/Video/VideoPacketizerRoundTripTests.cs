@@ -1,4 +1,5 @@
 using RemoteControl.Net.Video;
+using RemoteControl.Protocol;
 using Xunit;
 
 namespace RemoteControl.Net.Tests.Video;
@@ -129,6 +130,41 @@ public class VideoPacketizerRoundTripTests
     {
         var packetizer = new VideoPacketizer();
         Assert.Throws<ArgumentException>(() => packetizer.Packetize(0, ReadOnlySpan<byte>.Empty));
+    }
+
+    [Fact]
+    public void ZeroParity_ProducesOnlyDataShards_AndRoundTrips()
+    {
+        var frame = MakeFrame(2500, seed: 30);
+        var packetizer = new VideoPacketizer(shardPayloadSize: 1200, parityRatio: 0);
+        var depacketizer = new VideoDepacketizer();
+
+        var packets = packetizer.Packetize(8, frame);
+
+        Assert.Equal(3, packets.Count);
+        byte[]? result = null;
+        foreach (var packet in packets)
+            result ??= depacketizer.AddPacket(packet);
+
+        Assert.Equal(frame, result);
+    }
+
+    [Fact]
+    public void MalformedFecCounts_AreRejectedBeforeAllocatingAssembly()
+    {
+        var packet = new byte[VideoPacketHeader.Size + 1];
+        new VideoPacketHeader(
+            FrameIndex: 1,
+            FecShardIndex: 0,
+            FecDataShards: 0,
+            FecTotalShards: ushort.MaxValue,
+            Flags: VideoPacketFlags.None,
+            FrameByteLength: 1).WriteTo(packet);
+
+        var depacketizer = new VideoDepacketizer();
+
+        Assert.Throws<ArgumentException>(() => depacketizer.AddPacket(packet));
+        Assert.Equal(0, depacketizer.InProgressFrameCount);
     }
 
     private static byte[] MakeFrame(int length, int seed)

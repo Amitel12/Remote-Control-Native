@@ -189,14 +189,16 @@ Ordered so the two highest-risk unknowns surface first, not last.
    hardware to verify: `RemoteControl.Protocol` (wire types, 19 tests),
    `RemoteControl.Net`'s Reed-Solomon FEC (16 tests, including exhaustive
    K-of-N reconstruction across every loss combination for small block
-   sizes), video packetizer/depacketizer (7 tests, simulated loss/
+   sizes), video packetizer/depacketizer (9 tests, simulated loss/
    reordering/duplicates/interleaved frames), STUN client (7 tests,
    including a real RFC 5769 reference vector and a genuine UDP loopback
-   round trip), and the adaptive frame pacer (5 tests). `RemoteControl.
+   round trip), LAN session framing (6 tests), and the adaptive frame pacer
+   (5 tests). `RemoteControl.
    Signaling`'s WebSocket client is implemented but not separately unit
-   tested (straightforward `ClientWebSocket` plumbing). 58 tests total,
-   all passing, none of them exercised against real hardware or a real
-   network yet -- that's still ahead.
+   tested (straightforward `ClientWebSocket` plumbing). 66 tests total,
+   all passing. The LAN framing is exercised across a real localhost UDP
+   socket and real GPU processes; a physical two-machine network is still
+   ahead.
 1. **Phase 0 -- Capture -> Encode -> Decode -> Render loopback, single
    machine, no networking. Steps 0-2 done and real-hardware verified.** See
    `docs/PHASE-0.md` for the full working plan and results. Step 1 (codec
@@ -231,11 +233,16 @@ Ordered so the two highest-risk unknowns surface first, not last.
    Desktop Duplication surface into a reusable render-target texture; no
    CPU pixel copy is introduced.
 2. **Phase 1 -- LAN UDP streaming, two machines, no NAT traversal.**
-   `EnetTransport` with a hardcoded LAN address, `VideoPacketizer`/
-   `VideoDepacketizer` (already implemented, see above) wired in, no FEC
-   yet (LAN loss is near-zero). **Milestone**: live cross-machine LAN
-   streaming with measured glass-to-glass latency as the baseline every
-   later phase is compared against.
+   The first direct-UDP harness slice is now implemented: a configuration/
+   ready handshake and session envelope wire `VideoPacketizer`/
+   `VideoDepacketizer` between separate host and client processes, with FEC
+   disabled for the low-loss baseline. A 300-frame 1080p localhost run
+   completed 300/300 capture, encode, reassembly, decode, and presentation
+   with zero malformed or incomplete frames; see `docs/PHASE-1.md`.
+   `EnetTransport`, the real two-machine run, and latency instrumentation are
+   still open. **Milestone**: live cross-machine LAN streaming with measured
+   glass-to-glass latency as the baseline every later phase is compared
+   against.
 3. **Phase 2 -- STUN + hole-punch + TURN fallback.** `StunClient`
    (already implemented, see above) against the deployed coturn VPS; C#
    `SignalingClient` (already implemented) implements register -> exchange
@@ -347,16 +354,16 @@ continuing, not just items to check off.
 
 The pure-logic pieces (`RemoteControl.Protocol`, `RemoteControl.Net`) are
 the exception -- they're fully verifiable anywhere the .NET SDK runs, and
-already are (`dotnet test` from the repo root, 58 passing tests). Keep
+already are (`dotnet test` from the repo root, 66 passing tests). Keep
 extending that test coverage as those modules grow; don't let "this needs
 real hardware" become an excuse to skip testing the parts that don't.
 
 ## Next step
 
-Start Phase 1 by wiring the already-implemented video packetizer and
-depacketizer between two LAN machines. Phase 0's correctness, throughput,
-hardware-engine use, driver-visible GPU residency, display-mode recovery, and
-secure-desktop recovery gates are now answered. Keep native NVENC as the NVIDIA
-encode path; the failed Media Foundation vendor encoder and PIX investigations
-are closed. Fullscreen-exclusive and driver-reset recovery remain useful soak
-coverage rather than blockers for beginning Phase 1.
+Phase 1's two-process localhost wiring is complete. Next, run the LAN host and
+client on two Windows PCs, add latency instrumentation, and establish the wired
+LAN glass-to-glass baseline. Phase 0's correctness, throughput, hardware-engine
+use, driver-visible GPU residency, display-mode recovery, and secure-desktop
+recovery gates are answered. Keep native NVENC as the NVIDIA encode path; the
+failed Media Foundation vendor encoder and PIX investigations are closed.
+Fullscreen-exclusive and driver-reset recovery remain useful soak coverage.

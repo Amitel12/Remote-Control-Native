@@ -17,7 +17,7 @@ namespace RemoteControl.Tools.LoopbackHarness;
 /// Step 0 probes transforms, Step 1 tests the codec against a synthetic
 /// texture, and Step 2 runs the full live desktop loopback.
 /// </summary>
-internal static class Program
+internal static partial class Program
 {
     private const uint Width = 1920;
     private const uint Height = 1080;
@@ -29,8 +29,15 @@ internal static class Program
     private static int Main(string[] args)
     {
         var logger = new ConsoleLogger("LoopbackHarness");
+        var lanHostTarget = ReadOption(args, "--lan-host");
+        var lanClientPort = ReadOption(args, "--lan-client");
+        if (lanHostTarget is not null && lanClientPort is not null)
+        {
+            logger.Error("Choose either --lan-host or --lan-client, not both.");
+            return 2;
+        }
 
-        if (!RunStep0(logger))
+        if (lanHostTarget is null && lanClientPort is null && !RunStep0(logger))
             return 2;
 
         // MftProbe.Enumerate (Step 0) pairs its own MFStartup with an
@@ -47,7 +54,19 @@ internal static class Program
         Vortice.MediaFoundation.MediaFactory.MFStartup(false).CheckError();
         try
         {
-            if (args.Contains("--step1"))
+            if (lanHostTarget is not null)
+            {
+                RunLanHost(logger, ParseRemoteEndpoint(lanHostTarget), ReadFrameTarget(args));
+            }
+            else if (lanClientPort is not null)
+            {
+                RunLanClient(
+                    logger,
+                    ParseListenPort(lanClientPort),
+                    ReadFrameTarget(args),
+                    verifyFrame: !args.Contains("--no-verify-frame"));
+            }
+            else if (args.Contains("--step1"))
             {
                 RunStep1(
                     logger,
@@ -65,7 +84,7 @@ internal static class Program
         }
         catch (Exception ex)
         {
-            logger.Error("Phase 0 hardware run failed.", ex);
+            logger.Error("Hardware run failed.", ex);
             return 1;
         }
         finally
