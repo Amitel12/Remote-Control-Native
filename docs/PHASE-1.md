@@ -14,8 +14,9 @@
 The first slice uses a direct UDP socket so the capture/encode process and the
 decode/present process are genuinely separated before adding NAT traversal or
 control channels. The planned `EnetTransport` abstraction is not implemented
-yet. Video uses the existing `VideoPacketizer`/`VideoDepacketizer` with parity
-disabled for the initial low-loss LAN baseline.
+yet. Video uses the existing `VideoPacketizer`/`VideoDepacketizer`, with parity
+off by default (`--parity-percent 0`) for the low-loss LAN baseline above --
+see "FEC parity recovery" below for turning it on and what it actually buys.
 
 ## Running the localhost test
 
@@ -51,6 +52,60 @@ window or press Ctrl+C in the host terminal to cancel before connection.
 Each display-mode rebuild receives a new random session ID, allowing the client
 to discard stale datagrams and recreate its video session at the new size.
 
+## FEC parity recovery
+
+`VideoPacketizer`/`VideoDepacketizer` already fully implement Reed-Solomon
+parity shards and reconstruction (`RemoteControl.Net.Fec.ReedSolomonCodec`,
+16 unit tests including exhaustive K-of-N reconstruction) -- that work
+predates Phase 1. What Phase 1 hadn't done until now is turn it on anywhere
+the real LAN host runs, or verify it actually recovers real loss over the
+real runtime socket path rather than just in an isolated unit test.
+
+Two new host-only flags:
+
+- `--parity-percent N` (0-100, default 0): sets `VideoPacketizer`'s
+  `parityRatio`. `N`% of a frame's data-shard count is added as recoverable
+  parity shards (e.g. 10 data shards + 25% parity = 3 parity shards; any 10
+  of the resulting 13 are enough to reconstruct the frame).
+- `--drop-percent N` (0-100, default 0): **diagnostic only, not a real
+  network's loss.** Before sending each video shard, the host rolls the dice
+  and silently skips sending it N% of the time. This is the only way to
+  prove FEC recovery works over the real socket path without a second,
+  genuinely lossy network -- it exists to exercise the pipeline, not to
+  model real Wi-Fi loss statistics (real loss is bursty and correlated,
+  this is independent per-shard).
+
+**Real localhost A/B result** (RTX 3070, 1920x1080@60, 300 frames, 15%
+simulated per-shard loss both runs):
+
+| | `--parity-percent 0` (control) | `--parity-percent 25` |
+|---|---|---|
+| completed | 81 | 276 |
+| decoded | **0** | **272** |
+| presented | **0 / 300** | **272 / 300** |
+| dropped-incomplete | 211 | 230 |
+
+Without parity, 15% independent per-shard loss didn't just drop a few
+frames -- it wedged the entire stream at 0 decoded/presented. The likely
+cause: NVENC's initial IDR (keyframe) is one large frame spread across many
+shards, so it has the highest chance of losing at least one shard to
+independent per-shard loss, and this harness sends exactly one keyframe at
+stream start (no periodic re-keyframing yet) -- lose that one frame
+irrecoverably and every subsequent P-frame has nothing to decode against.
+With 25% parity, the same loss recovers to 272/300 presented (90.7%).
+
+That comparison is the real, load-bearing result. One number in the table
+is not yet understood: `completed` (276) plus `dropped-incomplete` (230) sum
+to 506, more than the 300 frames sent -- `VideoDepacketizer` doesn't
+currently prevent a previously-evicted frame index from being reopened as a
+new `FrameAssembly` if late/reordered shards for it keep arriving after
+eviction, which could double-count that index as both dropped and later
+completed. Flagging this rather than quietly rounding off the table: the
+headline recovery result (0 -> 272 presented) is a real, direct hardware
+observation and not in question, but this specific counter's exact
+bookkeeping under loss + FEC deserves a closer look before being relied on
+for precise loss-rate reporting.
+
 ## Real-hardware localhost result
 
 RTX 3070 / Windows 11, 1920x1080, native NVENC P1 ultra-low-latency IPPP,
@@ -72,7 +127,10 @@ two-machine LAN behavior or glass-to-glass latency.
 ## Remaining Phase 1 gate
 
 1. Run the same roles on two Windows PCs connected to the same router.
-2. Record packet/frame counters on wired Ethernet, then Wi-Fi.
+2. Record packet/frame counters on wired Ethernet, then Wi-Fi, and try
+   `--parity-percent` against whatever real loss shows up there -- see "FEC
+   parity recovery" above for what it fixed against simulated loss and the
+   one open question in its numbers.
 3. Add latency timestamps/echo clock-offset estimation and measure the LAN
    glass-to-glass baseline.
 4. Put the socket behind the planned transport abstraction (and decide whether

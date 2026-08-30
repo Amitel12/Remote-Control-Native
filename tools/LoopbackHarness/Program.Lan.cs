@@ -41,13 +41,13 @@ internal static partial class Program
         return port;
     }
 
-    private static void RunLanHost(ILogger logger, IPEndPoint clientEndpoint, int targetFrames)
+    private static void RunLanHost(ILogger logger, IPEndPoint clientEndpoint, int targetFrames, int parityPercent, int dropPercent)
     {
         while (true)
         {
             try
             {
-                RunLanHostSession(logger, clientEndpoint, targetFrames);
+                RunLanHostSession(logger, clientEndpoint, targetFrames, parityPercent, dropPercent);
                 return;
             }
             catch (DesktopConfigurationChangedException ex)
@@ -57,9 +57,11 @@ internal static partial class Program
         }
     }
 
-    private static void RunLanHostSession(ILogger logger, IPEndPoint clientEndpoint, int targetFrames)
+    private static void RunLanHostSession(ILogger logger, IPEndPoint clientEndpoint, int targetFrames, int parityPercent, int dropPercent)
     {
-        logger.Info($"Phase 1 LAN host: capture -> native NVENC -> UDP {clientEndpoint}.");
+        logger.Info($"Phase 1 LAN host: capture -> native NVENC -> UDP {clientEndpoint}" +
+                    $"{(parityPercent > 0 ? $", {parityPercent}% FEC parity" : "")}" +
+                    $"{(dropPercent > 0 ? $", simulating {dropPercent}% video-shard loss (diagnostic only)" : "")}.");
 
         using var mfDevice = MfDevice.Create(logger);
         var displays = DisplayEnumerator.Enumerate(mfDevice.Device);
@@ -103,7 +105,8 @@ internal static partial class Program
             FpsDenominator);
         WaitForLanClient(socket, configuration, sessionId, logger);
 
-        var packetizer = new VideoPacketizer(parityRatio: 0);
+        var packetizer = new VideoPacketizer(parityRatio: parityPercent / 100.0);
+        var dropRng = dropPercent > 0 ? new Random() : null;
         var run = Stopwatch.StartNew();
         TimeSpan? runLimit = targetFrames == 0
             ? null
@@ -123,6 +126,7 @@ internal static partial class Program
         var encodedBytesSent = 0L;
         var wireBytesSent = 0L;
         var acquireTimeouts = 0;
+        var droppedShardsSimulated = 0;
         var sendTimes = new List<double>();
 
         try
@@ -155,6 +159,15 @@ internal static partial class Program
                             encodedBytesSent += encodedBytes.Length;
                             foreach (var videoPacket in packetizer.Packetize(frameIndex++, encodedBytes))
                             {
+                                // Diagnostic-only, for proving FEC recovery works over the real
+                                // socket path -- not a real network's loss, so it's a plain RNG
+                                // check on the shard we're about to send, not queue/burst modeling.
+                                if (dropRng is not null && dropRng.Next(100) < dropPercent)
+                                {
+                                    droppedShardsSimulated++;
+                                    continue;
+                                }
+
                                 var datagram = LanDatagramCodec.WrapVideo(sessionId, videoPacket);
                                 socket.Send(datagram);
                                 packetsSent++;
@@ -194,7 +207,8 @@ internal static partial class Program
         logger.Info(
             $"[lan-host] captured={captured}, encoded={encoded}, packets={packetsSent}, " +
             $"payload={encodedBytesSent / 1024.0:0.0}KiB, wire={wireBytesSent / 1024.0:0.0}KiB, timeouts={acquireTimeouts}, " +
-            $"rate={(encoded / run.Elapsed.TotalSeconds):0.##}fps.");
+            $"rate={(encoded / run.Elapsed.TotalSeconds):0.##}fps" +
+            $"{(dropPercent > 0 ? $", simulated-dropped-shards={droppedShardsSimulated}" : "")}.");
         if (sendTimes.Count > 5)
         {
             var steady = sendTimes.Skip(5).ToList();
