@@ -11,29 +11,29 @@ lands.
 
 ## Current state
 
-`RemoteControl.Codec` now has Step 0 (`MftProbe`) and Step 1's codec
-components (`MfDevice`, `AsyncTransform`, `ColorConverter`,
+Phase 0 Steps 0-2 are implemented and have run successfully on the real
+Windows 11 / RTX 3070 machine. `RemoteControl.Codec` has Step 0
+(`MftProbe`) and Step 1's codec components (`MfDevice`, `AsyncTransform`, `ColorConverter`,
 `HardwareEncoder`, `NvencEncoder`, `HardwareDecoder`, `D3DSample`,
 `Nv12Readback`, `Interop/CodecApi.cs`) -- see the Step 1 write-up below for
 what each does and what real hardware forced them to become.
 `NvencEncoder` is the working encode-side hardware path: it drives NVIDIA's
 native NVENCODE API with the existing D3D11 NV12 texture and its real
 subresource index, bypassing the unusable NVIDIA encoder MFT without a CPU
-pixel readback. `RemoteControl.Capture` and `RemoteControl.Render` still
-contain no source files, only a `.csproj` each -- that's Step 2.
-`tools/LoopbackHarness/Program.cs` runs Step 0 then Step 1 at 1080p60,
-defaulting to native NVENC; `--mf-encoder` retains the Media Foundation
-comparison.
+pixel readback. `RemoteControl.Capture` now provides `DisplayEnumerator`
+and `DesktopDuplicator`; `RemoteControl.Render` provides
+`SwapChainPresenter`. `tools/LoopbackHarness/Program.cs` runs the complete
+live Step 2 loop by default. `--step1` selects the synthetic codec test and
+`--mf-encoder` retains its Media Foundation comparison.
 
 What is already done and correct: the NuGet references (`Vortice.DXGI`,
 `Vortice.Direct3D11`, `Vortice.MediaFoundation`, all 3.8.3, plus
 `Lennox.NvEncSharp` 2.1.1) and the project reference graph. Those don't
 need revisiting.
 
-## What has to be built
+## Implemented pipeline
 
-Two components remain, both Step 2 (`DesktopDuplicator` and
-`SwapChainPresenter`); the rest were built for Step 1:
+The complete Phase 0 path is now present:
 
 - **`DesktopDuplicator`** (`Capture`) -- `IDXGIOutputDuplication`,
   `AcquireNextFrame` -> `ID3D11Texture2D`. Also `DisplayEnumerator` for
@@ -55,8 +55,10 @@ Two components remain, both Step 2 (`DesktopDuplicator` and
 - **`HardwareDecoder`** (`Codec`, done) -- H.264 decoder MFT, output as
   D3D11 textures, no CPU readback. Zero-copy confirmed for real -- see
   Step 1 findings 5 and "Decode-side zero-copy" below.
-- **`SwapChainPresenter`** (`Render`, Step 2) -- present decoded textures
-  via a D3D11 swap chain. Owns `DXGI_STATUS_OCCLUDED` and `ResizeBuffers`
+- **`SwapChainPresenter`** (`Render`, done) -- presents the decoded NV12
+  texture directly through the D3D11 video processor into a flip-discard
+  BGRA swap chain. Its input view uses the decoder's real array slice. It
+  owns `DXGI_STATUS_OCCLUDED`, minimized-window skips, and `ResizeBuffers`
   handling (`ARCHITECTURE.md` lesson #4).
 
 ## Build order
@@ -68,7 +70,7 @@ built. Capture and swap-chain presentation are well-trodden with plenty of
 C# precedent; the Media Foundation pipeline is the actual unknown. Prove
 that first.
 
-**Step 0 -- enumerate the MFTs. Written, not yet run on real hardware.**
+**Step 0 -- enumerate the MFTs. Written and run on real hardware.**
 `RemoteControl.Codec`'s `MftProbe`, invoked by `tools/LoopbackHarness`:
 calls `MFTEnumEx` for hardware and software H.264 encoders and decoders
 and prints what comes back, then states a pass/incomplete verdict. Answers
@@ -287,9 +289,31 @@ the hardware and software encoder MFTs on this machine -- B-frame count
 isn't configurable via `ICodecAPI` here at all; `MF_LOW_LATENCY` is set
 and doing the only enforceable part of the job.
 
-**Step 2 -- real capture in, real presentation out.** Add
-`DesktopDuplicator` and `SwapChainPresenter` around a codec that is
-already trusted.
+**Step 2 -- real capture in, real presentation out: CONFIRMED working.**
+`DesktopDuplicator` enumerates outputs on the same adapter as `MfDevice`,
+acquires with `IDXGIOutputDuplication`, and recreates the duplication
+session after `DXGI_ERROR_ACCESS_LOST`. The acquired desktop surface has no
+bind flags and the Video Processor MFT rejected it with
+`DXGI_ERROR_INVALID_CALL`; the required bridge is one reusable BGRA
+render-target texture populated with D3D11 `CopyResource`. This is a
+GPU-to-GPU copy, not a CPU readback/upload. `SwapChainPresenter` uses the
+D3D11 video processor to convert the decoder's actual NV12 texture-array
+slice to a BGRA flip-discard swap chain.
+
+Real Release run, output 0 at 1920x1080, native NVENC P1, 300 presentation
+target: **315 captured / 315 encoded / 315 decoded / 300 presented**, zero
+acquisition timeouts and zero occlusion/minimize skips. Steady callback
+latency from acquired desktop frame to `Present(syncInterval: 0)` averaged
+**3.064ms** (2.407ms min, 5.324ms max, 5-frame warmup skipped). The one-off
+decoded PNG is a coherent copy of the live desktop.
+
+A second Release run with `--exercise-window-state` resized the client from
+1280x720 to 960x540, minimized it for 30 decoded frames, restored it, and
+continued to completion: **346 captured / 346 encoded / 346 decoded / 301
+presented**, 30 safe minimized skips, no crash or device teardown. The
+`DXGI_ERROR_ACCESS_LOST` recreation path is implemented but was not forced
+in this run; display-mode/fullscreen/UAC transitions still need longer soak
+testing.
 
 ## Exit criteria are two questions, not one
 
@@ -304,11 +328,15 @@ wasn't:
    the synthetic source (`FrameVerifier`, gated behind `--no-verify-frame`)
    -- and getting a genuinely correct-looking PNG took two real bugs to
    find first (Step 1 findings 5 and 6 above), since a wrong-but-plausible
-   image is a worse failure mode than an obvious crash.
+   image is a worse failure mode than an obvious crash. **Answered for the
+   complete Step 2 loop as well:** the one-off PNG is a coherent 1920x1080
+   capture of the live desktop after native encode and D3D11 decode.
 2. **Are there CPU copies?** Only fully answerable in a GPU debugger (PIX).
    Step 1's readback scaffold would mask the answer, so remove it before
    measuring. **API-level contract now answered for native NVENC; PIX still
-   open.** The native path registers the D3D11 NV12 texture directly and
+   open.** Capture normalization is a GPU `CopyResource`; color conversion
+   and presentation use D3D11/MF video processing; the native path registers
+   the D3D11 NV12 texture directly and
    decoded output is an `IMFDXGIBuffer`; it never calls `Nv12Readback`. A PIX
    capture is still required to prove the driver does not make a hidden CPU
    pixel copy internally. The `--mf-encoder` software fallback intentionally
