@@ -56,12 +56,13 @@ to discard stale datagrams and recreate its video session at the new size.
 RTX 3070 / Windows 11, 1920x1080, native NVENC P1 ultra-low-latency IPPP,
 8Mbps CBR, two separate processes over `127.0.0.1`:
 
-- Host: **300 captured / 300 encoded**, 3,881 video datagrams, 4,386.1KiB
-  encoded payload, 4,654.2KiB on the LAN envelope, zero capture timeouts.
-- Host packetize + socket send: **0.191ms average** (0.091ms min, 0.759ms
+- Host: **300 captured / 300 encoded at 59.99fps**, 3,060 video datagrams,
+  3,407.5KiB encoded payload, 3,669.6KiB on the LAN envelope, three normal
+  unchanged-desktop acquisition timeouts.
+- Host packetize + socket send: **0.181ms average** (0.070ms min, 0.755ms
   max, 5-frame warmup skipped).
-- Client: **300 completed / 300 decoded / 300 presented**, zero malformed
-  datagrams and zero incomplete frames.
+- Client: **300 completed / 300 decoded / 300 presented**, zero malformed,
+  incomplete, or dropped-incomplete frames.
 - A separate 30-frame correctness run wrote a coherent decoded desktop PNG.
 
 This proves the process split, handshake, UDP framing, exact H.264 frame
@@ -79,6 +80,11 @@ two-machine LAN behavior or glass-to-glass latency.
    control/input channels).
 5. Repeat host resolution-change and Win+L recovery while the remote client is
    connected.
+
+The host is paced to the negotiated 60fps rather than sending at the captured
+display's refresh rate. The client retains a small reordering window and evicts
+older incomplete frames, reporting them as dropped instead of allowing one
+lost UDP shard to accumulate state or terminate the rest of the stream.
 
 Do not claim the Phase 1 milestone until the two-machine run and latency
 measurement pass.

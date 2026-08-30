@@ -195,7 +195,7 @@ Ordered so the two highest-risk unknowns surface first, not last.
    round trip), LAN session framing (6 tests), and the adaptive frame pacer
    (5 tests). `RemoteControl.
    Signaling`'s WebSocket client is implemented but not separately unit
-   tested (straightforward `ClientWebSocket` plumbing). 66 tests total,
+   tested (straightforward `ClientWebSocket` plumbing). 67 tests total,
    all passing. The LAN framing is exercised across a real localhost UDP
    socket and real GPU processes; a physical two-machine network is still
    ahead.
@@ -354,7 +354,7 @@ continuing, not just items to check off.
 
 The pure-logic pieces (`RemoteControl.Protocol`, `RemoteControl.Net`) are
 the exception -- they're fully verifiable anywhere the .NET SDK runs, and
-already are (`dotnet test` from the repo root, 66 passing tests). Keep
+already are (`dotnet test` from the repo root, 67 passing tests). Keep
 extending that test coverage as those modules grow; don't let "this needs
 real hardware" become an excuse to skip testing the parts that don't.
 
