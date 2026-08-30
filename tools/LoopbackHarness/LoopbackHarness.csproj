@@ -24,6 +24,7 @@
     <ProjectReference Include="..\..\src\RemoteControl.Codec\RemoteControl.Codec.csproj" />
     <ProjectReference Include="..\..\src\RemoteControl.Render\RemoteControl.Render.csproj" />
     <ProjectReference Include="..\..\src\RemoteControl.Common\RemoteControl.Common.csproj" />
+    <ProjectReference Include="..\..\src\RemoteControl.Net\RemoteControl.Net.csproj" />
   </ItemGroup>
 
   <ItemGroup>

@@ -44,9 +44,28 @@ Rides ENet-CSharp channels once the peer connection (direct P2P via
 hole-punch, or via the coturn TURN relay) is established. Never JSON --
 this is the latency-sensitive hot path.
 
-### Video channel (unreliable/unordered, ENet)
+### Phase 1 LAN session envelope
 
-Every UDP payload is `VideoPacketHeader` (15 bytes, little-endian,
+The direct-UDP Phase 1 harness prefixes every datagram with a 13-byte session
+header. This bootstrap transport is implemented by
+`RemoteControl.Net.Transport.LanDatagramCodec`; the planned ENet transport is
+not implemented yet.
+
+```
+[0..4)   Magic       "RCN1"
+[4]      Kind        1=Configuration 2=Ready 3=Video 4=End
+[5..13)  SessionId   uint64, little-endian
+```
+
+`Configuration` appends width, height, FPS numerator, and FPS denominator as
+four little-endian `uint32` values. `Ready` and `End` have no payload. `Video`
+appends one complete video packet described below. A new random session ID is
+used after a display-mode rebuild so delayed datagrams from the old dimensions
+cannot enter the new decoder.
+
+### Video channel (unreliable/unordered)
+
+Every video payload is `VideoPacketHeader` (15 bytes, little-endian,
 `RemoteControl.Protocol.VideoPacketHeader`) followed by one FEC shard's
 bytes:
 

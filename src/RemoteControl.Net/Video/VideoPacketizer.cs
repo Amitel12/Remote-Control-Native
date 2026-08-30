@@ -23,7 +23,7 @@ namespace RemoteControl.Net.Video;
 public sealed class VideoPacketizer
 {
     public const int DefaultShardPayloadSize = 1200;
-    private const int MaxTotalShards = 256;
+    public const int MaxTotalShards = 256;
 
     private readonly int _shardPayloadSize;
     private readonly double _parityRatio;
@@ -41,7 +41,9 @@ public sealed class VideoPacketizer
         if (frame.IsEmpty) throw new ArgumentException("Frame must not be empty.", nameof(frame));
 
         var dataShardCount = (frame.Length + _shardPayloadSize - 1) / _shardPayloadSize;
-        var parityShardCount = Math.Max(1, (int)Math.Ceiling(dataShardCount * _parityRatio));
+        var parityShardCount = _parityRatio == 0
+            ? 0
+            : Math.Max(1, (int)Math.Ceiling(dataShardCount * _parityRatio));
         var totalShardCount = dataShardCount + parityShardCount;
 
         if (totalShardCount > MaxTotalShards)

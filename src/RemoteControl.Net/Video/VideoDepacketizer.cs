@@ -15,6 +15,7 @@ namespace RemoteControl.Net.Video;
 /// </summary>
 public sealed class VideoDepacketizer
 {
+    private const int MaxInProgressFrames = 64;
     private readonly Dictionary<uint, FrameAssembly> _inProgress = new();
 
     /// <summary>
@@ -26,15 +27,27 @@ public sealed class VideoDepacketizer
     public byte[]? AddPacket(ReadOnlySpan<byte> packet)
     {
         var header = VideoPacketHeader.ReadFrom(packet);
-        var shardBytes = packet[VideoPacketHeader.Size..].ToArray();
+        var shardPayload = packet[VideoPacketHeader.Size..];
+        ValidateHeader(header, shardPayload.Length);
 
         if (!_inProgress.TryGetValue(header.FrameIndex, out var assembly))
         {
-            assembly = new FrameAssembly(header.FecDataShards, header.FecTotalShards, header.FrameByteLength);
+            if (_inProgress.Count >= MaxInProgressFrames)
+                throw new InvalidOperationException($"Too many incomplete video frames (limit {MaxInProgressFrames}).");
+
+            assembly = new FrameAssembly(
+                header.FecDataShards,
+                header.FecTotalShards,
+                header.FrameByteLength,
+                shardPayload.Length);
             _inProgress[header.FrameIndex] = assembly;
         }
+        else if (!assembly.Matches(header, shardPayload.Length))
+        {
+            throw new ArgumentException("Video shards for one frame disagree about FEC or frame dimensions.", nameof(packet));
+        }
 
-        assembly.AddShard(header.FecShardIndex, shardBytes);
+        assembly.AddShard(header.FecShardIndex, shardPayload.ToArray());
 
         if (!assembly.CanReassemble) return null;
 
@@ -54,27 +67,51 @@ public sealed class VideoDepacketizer
 
     public int InProgressFrameCount => _inProgress.Count;
 
+    private static void ValidateHeader(VideoPacketHeader header, int shardPayloadLength)
+    {
+        if (shardPayloadLength <= 0)
+            throw new ArgumentException("Video shard payload must not be empty.");
+        if (header.FecDataShards == 0 ||
+            header.FecTotalShards < header.FecDataShards ||
+            header.FecTotalShards > VideoPacketizer.MaxTotalShards ||
+            header.FecShardIndex >= header.FecTotalShards)
+        {
+            throw new ArgumentException("Video packet contains invalid FEC shard counts or index.");
+        }
+
+        var maximumFrameLength = (ulong)header.FecDataShards * (uint)shardPayloadLength;
+        if (header.FrameByteLength == 0 || header.FrameByteLength > maximumFrameLength)
+            throw new ArgumentException("Video packet frame length is inconsistent with its data shards.");
+    }
+
     private sealed class FrameAssembly
     {
         private readonly byte[]?[] _shards;
         private readonly ushort _dataShards;
         private readonly ushort _totalShards;
         private readonly uint _frameByteLength;
+        private readonly int _shardPayloadLength;
         private int _receivedCount;
 
-        public FrameAssembly(ushort dataShards, ushort totalShards, uint frameByteLength)
+        public FrameAssembly(ushort dataShards, ushort totalShards, uint frameByteLength, int shardPayloadLength)
         {
             _dataShards = dataShards;
             _totalShards = totalShards;
             _frameByteLength = frameByteLength;
+            _shardPayloadLength = shardPayloadLength;
             _shards = new byte[totalShards][];
         }
+
+        public bool Matches(VideoPacketHeader header, int shardPayloadLength) =>
+            header.FecDataShards == _dataShards &&
+            header.FecTotalShards == _totalShards &&
+            header.FrameByteLength == _frameByteLength &&
+            shardPayloadLength == _shardPayloadLength;
 
         public bool CanReassemble => _receivedCount >= _dataShards;
 
         public void AddShard(ushort shardIndex, byte[] shardBytes)
         {
-            if (shardIndex >= _totalShards) return; // malformed/stale packet, ignore rather than throw -- untrusted network input
             if (_shards[shardIndex] is not null) return; // duplicate, ignore
             _shards[shardIndex] = shardBytes;
             _receivedCount++;
