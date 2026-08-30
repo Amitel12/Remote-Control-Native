@@ -11,10 +11,14 @@ lands.
 
 ## Current state
 
-`RemoteControl.Capture`, `RemoteControl.Codec`, and `RemoteControl.Render`
-contain no source files at all -- only a `.csproj` each. There is nothing
-to fill in; this is greenfield. `tools/LoopbackHarness/Program.cs` exists
-but only prints that the pipeline is unimplemented.
+`RemoteControl.Codec` now has Step 0 (`MftProbe`) and Step 1's codec
+components (`MfDevice`, `AsyncTransform`, `ColorConverter`,
+`HardwareEncoder`, `HardwareDecoder`, `D3DSample`, `Nv12Readback`,
+`Interop/CodecApi.cs`) -- see the Step 1 write-up below for what each does
+and what real hardware forced them to become. `RemoteControl.Capture` and
+`RemoteControl.Render` still contain no source files, only a `.csproj`
+each -- that's Step 2. `tools/LoopbackHarness/Program.cs` now runs Step 0
+then Step 1 in sequence.
 
 What is already done and correct: the NuGet references (`Vortice.DXGI`,
 `Vortice.Direct3D11`, `Vortice.MediaFoundation`, all 3.8.3) and the
@@ -22,25 +26,26 @@ project reference graph. Those don't need revisiting.
 
 ## What has to be built
 
-Four components, plus one the original plan omitted:
+Two components remain, both Step 2 (`DesktopDuplicator` and
+`SwapChainPresenter`); the rest were built for Step 1:
 
 - **`DesktopDuplicator`** (`Capture`) -- `IDXGIOutputDuplication`,
   `AcquireNextFrame` -> `ID3D11Texture2D`. Also `DisplayEnumerator` for
   picking an output.
-- **Color conversion** (`Capture` or `Codec`) -- **this step is missing
-  from `ARCHITECTURE.md` entirely.** Desktop Duplication produces BGRA
-  (`B8G8R8A8_UNORM`); the H.264 encoder MFT wants NV12. Something must
-  convert, and it must stay on the GPU: either `VideoProcessorMFT` or a
-  pixel/compute shader. The obvious CPU-side conversion (read back,
-  convert, re-upload) silently destroys the zero-copy property that is the
-  entire point of this phase's gate. Treat it as a real component, not a
-  detail.
-- **`HardwareEncoder`** (`Codec`) -- H.264 encoder MFT, D3D11-aware,
-  configured for low latency (see below).
-- **`HardwareDecoder`** (`Codec`) -- H.264 decoder MFT, output as D3D11
-  textures, no CPU readback.
-- **`SwapChainPresenter`** (`Render`) -- present decoded textures via a
-  D3D11 swap chain. Owns `DXGI_STATUS_OCCLUDED` and `ResizeBuffers`
+- **Color conversion** (`Codec`, done) -- **this step was missing from
+  `ARCHITECTURE.md` entirely.** Desktop Duplication produces BGRA
+  (`B8G8R8A8_UNORM`); the H.264 encoder MFT wants NV12. `ColorConverter`
+  does this via the Video Processor MFT, GPU-resident end to end -- see
+  Step 1 finding 6 for the real bug this step's implementation hit.
+- **`HardwareEncoder`** (`Codec`, done, with caveats) -- H.264 encoder
+  MFT. Tries the hardware (NVIDIA) encoder first as designed; falls back
+  to the software H.264 encoder MFT on this machine, where the hardware
+  one never becomes usable -- see Step 1 findings 1-3.
+- **`HardwareDecoder`** (`Codec`, done) -- H.264 decoder MFT, output as
+  D3D11 textures, no CPU readback. Zero-copy confirmed for real -- see
+  Step 1 findings 5 and "Decode-side zero-copy" below.
+- **`SwapChainPresenter`** (`Render`, Step 2) -- present decoded textures
+  via a D3D11 swap chain. Owns `DXGI_STATUS_OCCLUDED` and `ResizeBuffers`
   handling (`ARCHITECTURE.md` lesson #4).
 
 ## Build order
@@ -90,6 +95,159 @@ texture (solid colour, or a moving rectangle so successive frames differ)
 straight into encode -> decode. No Desktop Duplication, no swap chain.
 Isolates the risky link with nothing else able to be at fault.
 
+**Result on the same machine: PARTIAL GO. Decode-side D3D11 zero-copy is
+real and verified. Encode-side zero-copy is not usable on this hardware --
+the vendor encoder MFT never becomes ready to accept input, hardware or
+software sample, and a broken assumption (that D3D11 input at least fails
+cleanly) turned out to actively corrupt process state. The pipeline itself,
+driven the way this section describes, is proven correct end to end
+against the software H.264 encoder MFT -- same `ColorConverter`, same
+`HardwareDecoder`, same `AsyncTransform` drive loop, same verification
+PNG.**
+
+Built in `RemoteControl.Codec`, driven from `tools/LoopbackHarness`:
+`MfDevice` (D3D11 device against an explicitly chosen adapter +
+`IMFDXGIDeviceManager`), `ColorConverter` (BGRA -> NV12 via the Video
+Processor MFT), `HardwareEncoder` (NV12 -> H.264), `HardwareDecoder` (H.264
+-> NV12 D3D11 texture), and `AsyncTransform`, a shared driver used by all
+three MFTs. `tools/LoopbackHarness/SyntheticSource` renders the moving
+BGRA rectangle via two `ID3D11DeviceContext1.ClearView` calls (no shader
+needed); `FrameVerifier` is the one-off NV12 -> PNG readback, gated behind
+`--no-verify-frame`.
+
+Six things turned out wrong, in the order they were found. Each cost real
+debugging time on real hardware, which is the entire point of doing this
+before Phase 1:
+
+1. **The hardware H.264 encoder MFT rejects every D3D11 sample.**
+   `ProcessInput` returns `MF_E_UNSUPPORTED_D3D_TYPE` ("the input type is
+   not supported for D3D device") regardless of the input texture's
+   `BindFlags`/`Usage`/`ResourceOptionFlags`, regardless of whether
+   `MFT_MESSAGE_SET_D3D_MANAGER` is sent before or after type negotiation,
+   regardless of low-latency mode, and regardless of using
+   `MFCreateVideoSampleFromSurface` instead of `MFCreateDXGISurfaceBuffer`
+   to build the sample. The decoder's own D3D11 output (proven real, see
+   below) rules out a `MFCreateDXGISurfaceBuffer`/RIID bug; the color
+   converter accepting and producing D3D11 samples successfully on the
+   *same* device rules out the device/adapter setup. This is specific to
+   the encoder MFT's input path.
+2. **That rejection is not recoverable, in-instance or fresh.** Retrying
+   `ProcessInput` on the same transform after one D3D11 rejection throws
+   `MF_E_NOTACCEPTING`; forcing a reset (`MFT_MESSAGE_SET_D3D_MANAGER`
+   NULL, `MFT_MESSAGE_COMMAND_FLUSH`, restart streaming) upgrades that to a
+   **fatal, uncatchable `AccessViolationException` that kills the
+   process** -- not a managed exception `try`/`catch` can stop. Worse, the
+   corruption outlives the instance: activating a brand-new encoder MFT in
+   the same process, that has never touched a D3D11 sample, still throws
+   the same AV on its first `ProcessInput`. Whatever broke is process- or
+   driver-global, not per-object. `HardwareEncoder` now never sends
+   `MFT_MESSAGE_SET_D3D_MANAGER` to this encoder at all -- system-memory
+   input only, confirmed safe.
+3. **Independent of D3D11: the hardware encoder never signals it can
+   accept input, by any mechanism.** `MF_TRANSFORM_ASYNC` is genuinely set
+   (unlike the decoder -- see Step 0 note below), so the documented
+   contract is the event-driven one: unlock, then wait for
+   `METransformNeedInput` before the first `ProcessInput`. That wait timed
+   out with both the synchronous `GetEvent(0)` (MSDN's documented legal
+   substitute for the callback pump) and a proper
+   `BeginGetEvent`/`EndGetEvent` callback pump implementing
+   `IMFAsyncCallback` -- neither ever received a single event, for up to
+   20s. `GetInputStatus` polling (`MFT_INPUT_STATUS_ACCEPT_DATA`) -- the
+   pattern a working reference implementation
+   ([sipsorcery/mediafoundationsamples' `MFH264RoundTrip.cpp`](https://github.com/sipsorcery/mediafoundationsamples))
+   uses successfully against its own hardware H.264 encoder MFT -- also
+   never returned ready, for the full 5s bound `AsyncTransform` now uses.
+   `AsyncTransform` was rewritten around `GetInputStatus`/`ProcessOutput`
+   polling (matching that reference sample) instead of the event queue,
+   since the event queue provably does nothing on this driver for *any*
+   transform, not just this encoder -- but the encoder specifically still
+   never becomes ready. `HardwareEncoder.Encode` treats that timeout as an
+   expected, bounded outcome: it falls back to the software H.264 encoder
+   MFT (same pipeline, proven correct -- see below) rather than surfacing
+   an error, logs the finding once, and remembers process-wide so later
+   `HardwareEncoder` instances (the low-latency vs. defaults comparison
+   needs two) skip straight past the doomed hardware attempt.
+4. **`MftProbe`'s `MFStartup`/`MFShutdown` pairing (Step 0) tears down
+   Media Foundation for anything sharing its process afterward.**
+   `MftProbe.Enumerate` calls `MFShutdown` in a `finally` block -- correct
+   for Step 0 run alone, wrong once Step 1 runs immediately after it in
+   the same `LoopbackHarness` invocation. Every basic MF call (enumerate,
+   activate, negotiate types, get/set attributes) kept working regardless,
+   which is what made this so hard to isolate -- only starting a real
+   hardware encode session actually needed the torn-down subsystem, and it
+   failed with the misleading `MF_E_UNSUPPORTED_D3D_TYPE`, sending the
+   investigation down the D3D11 path above for real, separate reasons
+   before this one was found. `Program.Main` now calls `MFStartup` again
+   itself before Step 1 and matches it with its own `MFShutdown`, rather
+   than relying on `MftProbe`'s internal pairing to leave MF in a state
+   Step 1 can use.
+5. **The decoder's D3D11 output is one slice of a texture *array*, not a
+   standalone texture -- and copying the whole array with `CopyResource`
+   against a mismatched single-slice staging texture is a silent no-op,
+   not an error.** `IMFDXGIBuffer.SubresourceIndex` on the decoded sample's
+   buffer cycled 0..5 against a 6-slice array (the decoder's internal
+   reference-picture pool) -- ignoring it and blindly `CopyResource`-ing
+   produced a staging texture that read back as all-zero Y/U/V on every
+   frame, which decoded to a uniform dark green PNG that looked like a
+   real (if wrong) image rather than an obvious failure. `HardwareDecoder`
+   now returns a `DecodedFrame(Texture, SubresourceIndex)` record; every
+   consumer (`Nv12Readback`, `FrameVerifier`) uses
+   `CopySubresourceRegion(dst, 0, 0,0,0, src, subresourceIndex, null)`,
+   never `CopyResource`, against decoder output.
+6. **The Video Processor MFT does not guarantee the output sample it hands
+   back is the one you gave it**, even though its `OutputStreamProvidesSamples`
+   flag is false (meaning *it shouldn't be allocating its own). Handing
+   `ProcessOutput` a sample wrapping our own pre-created NV12 texture and
+   then trusting that texture to hold the result left it untouched
+   (all-zero) while the real converted frame was in the substituted sample
+   the whole time -- same "looks like success, silently wrong" shape as
+   finding 5, different mechanism. `ColorConverter.Convert` now extracts
+   the texture actually referenced by the sample `ProcessOutput` returns
+   (via `IMFDXGIBuffer`, same pattern as the decoder) instead of assuming
+   it's the texture that was handed in.
+
+One smaller Vortice/SharpGen binding issue, not an MF concept: the 2-arg
+`ID3D11DeviceContext1.ClearView(view, color)` convenience overload
+recurses into itself (stack overflow); the 3-arg form with `null` rects
+throws `NullReferenceException` marshaling the array. Only the 3-arg form
+with an explicit non-null rect array works. Affects `SyntheticSource` only.
+
+**Decode-side zero-copy: CONFIRMED, not just assumed.** The Microsoft H264
+Video Decoder MFT reports `MF_SA_D3D11_AWARE = true`; every decoded
+sample's buffer implements `IMFDXGIBuffer` (`HardwareDecoder` throws
+immediately, loudly, if one ever doesn't); the extracted `ID3D11Texture2D`
+is genuinely GPU-resident, D3D11VA-backed decode output, confirmed
+end-to-end by writing the decoded frame back to a PNG and visually
+matching the synthetic source's moving rectangle. Also confirmed: this
+decoder is a **synchronous** MFT (`MF_TRANSFORM_ASYNC` is absent) despite
+doing real D3D11/DXVA hardware acceleration internally -- the "hardware
+MFTs are async" landmine below turned out to describe the vendor encoder
+specifically, not every D3D11-aware MFT.
+
+**Encode-side zero-copy: not usable on this hardware.** Findings 1-3
+above are the complete, direct answer to this phase's other main
+question. `ARCHITECTURE.md`'s contingency for exactly this outcome
+("fall back to vendor-specific NVENC") is the live option -- NVIDIA's
+native NVENC SDK is a different, non-Media-Foundation API surface, so it
+is not affected by anything found here. That is now the concrete next
+investigation for the encode half of the pipeline, not a re-run of Step 1.
+
+**Low-latency vs. defaults, measured** (software H.264 encoder MFT, 1080p,
+90 synthetic frames, steady-state after a 5-frame warmup): low-latency
+(`MF_LOW_LATENCY` set; `CODECAPI_AVEncMPVDefaultBPictureCount` unsupported
+by this MFT, see below) averaged ~6.3ms encode /
+~0.12ms decode per frame; defaults averaged ~4.4-4.9ms encode / ~0.08-0.1ms
+decode. The two configurations differ in the direction the *encoder's*
+compressed output size does, not encode speed on this software path (low-
+latency: ~840B/frame avg; defaults: ~375B/frame avg) -- consistent with
+low-latency mode trading compression efficiency for latency, as intended,
+though these specific numbers are a software-encoder artifact, not
+representative of what the hardware path would show. `IsSupported` on
+`CODECAPI_AVEncMPVDefaultBPictureCount` returns "not supported" for both
+the hardware and software encoder MFTs on this machine -- B-frame count
+isn't configurable via `ICodecAPI` here at all; `MF_LOW_LATENCY` is set
+and doing the only enforceable part of the job.
+
 **Step 2 -- real capture in, real presentation out.** Add
 `DesktopDuplicator` and `SwapChainPresenter` around a codec that is
 already trusted.
@@ -103,25 +261,44 @@ wasn't:
 
 1. **Is the output correct?** Read one frame back to CPU and write a PNG.
    A readback is fine here -- it is a one-off check, not part of the
-   pipeline.
+   pipeline. **Answered for Step 1: yes**, decode output visually matches
+   the synthetic source (`FrameVerifier`, gated behind `--no-verify-frame`)
+   -- and getting a genuinely correct-looking PNG took two real bugs to
+   find first (Step 1 findings 5 and 6 above), since a wrong-but-plausible
+   image is a worse failure mode than an obvious crash.
 2. **Are there CPU copies?** Only answerable in a GPU debugger (PIX).
    Step 1's readback scaffold would mask the answer, so remove it before
-   measuring.
+   measuring. **Not yet answered** -- Step 1 confirms the *API-level*
+   contract (D3D11 textures in and out, `IMFDXGIBuffer` on every decoded
+   sample) but a PIX capture confirming zero CPU-side copies in practice is
+   still open, and more urgent now on the encode side specifically, since
+   Step 1's working path there is a system-memory encoder MFT with a
+   deliberate CPU readback (`Nv12Readback`) -- not zero-copy at all. See
+   "Encode-side zero-copy" above.
 
 Also required by the gate: that zero-B-frames/IPPP + `MF_LOW_LATENCY`
 measurably beats defaults. That is a *comparison*, so keep the default
 configuration runnable rather than deleting it once low-latency mode
-works.
+works. **Measured for Step 1** (software encoder path -- see above); not
+yet measured against the hardware encoder, which Step 1 never reached.
 
 ## Known landmines
 
-**Hardware MFTs are asynchronous.** They cannot be driven with the
-synchronous `ProcessInput` -> `ProcessOutput` loop shown in most samples
-and tutorials -- that is the software-MFT model. Hardware MFTs need
-`MF_TRANSFORM_ASYNC_UNLOCK` and an event-driven loop on
-`METransformNeedInput` / `METransformHaveOutput`. Getting this wrong does
-not fail cleanly; it hangs or starves. This is the most common way to lose
-days on Media Foundation.
+**Hardware MFTs are asynchronous -- except when the event queue doesn't
+work anyway.** The textbook rule still applies in spirit: an MFT reporting
+`MF_TRANSFORM_ASYNC` refuses most calls with `MF_E_TRANSFORM_ASYNC_LOCKED`
+until you set `MF_TRANSFORM_ASYNC_UNLOCK`. But confirmed on real hardware
+(Step 1): don't assume the event queue that unlocks access to
+(`METransformNeedInput`/`METransformHaveOutput` via `GetEvent` or
+`BeginGetEvent`/`EndGetEvent`) actually delivers anything -- on this
+NVIDIA driver it never did, for either mechanism, on the one MFT here that
+reports async at all. `GetInputStatus` polling before `ProcessInput` and a
+`ProcessOutput` polling loop after -- the plain synchronous model, just
+also legal to use post-unlock -- is what a working reference
+implementation uses and what this codebase's `AsyncTransform` uses now.
+Getting the unlock step wrong (or trusting the event queue blindly) does
+not fail cleanly; it hangs or starves. Still the most common way to lose
+days on Media Foundation, just not for the reason the API docs suggest.
 
 **D3D11 device setup for MF.** Create the device with
 `D3D11_CREATE_DEVICE_VIDEO_SUPPORT`; hand the MFT an
