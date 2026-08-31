@@ -64,17 +64,54 @@ RTX 3070 / Windows 11, 1920x1080, native NVENC P1 ultra-low-latency IPPP,
 - Client: **300 completed / 300 decoded / 300 presented**, zero malformed,
   incomplete, or dropped-incomplete frames.
 - A separate 30-frame correctness run wrote a coherent decoded desktop PNG.
+- `[lan-host] latency rtt avg=22.707ms min=4.898ms max=59.981ms, clock-offset
+  avg=-11.201ms (n=5)` -- see "Latency instrumentation" below for what this
+  does and doesn't prove.
 
 This proves the process split, handshake, UDP framing, exact H.264 frame
 reassembly, D3D11 decode, and presentation on the real GPU. It does not prove
 two-machine LAN behavior or glass-to-glass latency.
 
+## Latency instrumentation
+
+The host sends a `LanDatagramKind.LatencyProbe` (its own `Stopwatch.GetTimestamp()`
+and `DateTime.UtcNow.Ticks`) roughly once a second; the client echoes it back
+immediately via `LatencyEcho`, appending its own `DateTime.UtcNow.Ticks`. RTT is
+computed entirely in the host's own `Stopwatch` clock domain (send time vs. the
+same clock when the echo arrives), so it needs no cross-machine clock sync at
+all. The wall-clock fields only feed a clock-offset *estimate*
+(`clientWall - hostWall - RTT/2`, the standard symmetric-latency approximation),
+useful later for correlating host/client log timestamps once this runs across
+two real machines with unsynchronized clocks. See
+`RemoteControl.Net.Transport.LanDatagramCodec`'s `CreateLatencyProbe`/
+`CreateLatencyEcho`/`ReadLatencyProbe`/`ReadLatencyEcho`, and
+`RunLanHostSession`/`RunLanClient` in `tools/LoopbackHarness/Program.Lan.cs`.
+
+**This is the measurement mechanism working correctly, not a real latency
+number.** The localhost RTT above (avg 22.7ms) is *not* network latency --
+this machine has essentially zero network latency to itself. It's dominated by
+how often the host loop checks for a pending echo: that check only happens once
+per outer loop iteration, which is paced to the 60fps capture/encode cadence
+(~16.7ms), so up to roughly one frame period of polling latency is baked into
+every RTT sample by construction. That same polling granularity will still
+apply on a real two-machine run -- true network RTT will be entangled with it,
+not measured in isolation -- which is worth knowing before reading a real
+cross-machine number, not a problem introduced by testing over localhost.
+Tightening that (e.g. draining echoes on a separate thread/timer instead of
+once per captured frame) is a reasonable follow-up once real network numbers
+make it worth the precision.
+
 ## Remaining Phase 1 gate
 
 1. Run the same roles on two Windows PCs connected to the same router.
-2. Record packet/frame counters on wired Ethernet, then Wi-Fi.
-3. Add latency timestamps/echo clock-offset estimation and measure the LAN
-   glass-to-glass baseline.
+2. Record packet/frame counters on wired Ethernet, then Wi-Fi, and read the
+   new `[lan-host] latency rtt/clock-offset` line for the first real
+   cross-machine numbers (see "Latency instrumentation" above for its actual
+   precision floor before trusting the number).
+3. ~~Add latency timestamps/echo clock-offset estimation~~ **Done** -- see
+   "Latency instrumentation" above. The mechanism round-trips correctly on the
+   localhost test; the real LAN glass-to-glass number is still item 1's gate,
+   not this one's.
 4. Put the socket behind the planned transport abstraction (and decide whether
    ENet adds value for the unreliable video-only baseline before adding reliable
    control/input channels).

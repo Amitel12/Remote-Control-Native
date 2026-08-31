@@ -46,10 +46,35 @@ public class LanDatagramCodecTests
         Assert.Equal(new byte[] { 1, 2, 3, 4 }, datagram.Payload.ToArray());
     }
 
+    [Fact]
+    public void LatencyProbeAndEcho_RoundTrip()
+    {
+        var probeBytes = LanDatagramCodec.CreateLatencyProbe(42, perfTicks: 123456789L, wallTicks: 987654321L);
+        Assert.True(LanDatagramCodec.TryRead(probeBytes, out var probe));
+        Assert.Equal(LanDatagramKind.LatencyProbe, probe.Kind);
+        Assert.Equal(42UL, probe.SessionId);
+        var (perfTicks, wallTicks) = LanDatagramCodec.ReadLatencyProbe(probe.Payload.Span);
+        Assert.Equal(123456789L, perfTicks);
+        Assert.Equal(987654321L, wallTicks);
+
+        var echoBytes = LanDatagramCodec.CreateLatencyEcho(42, probePerfTicks: 123456789L, probeWallTicks: 987654321L, clientWallTicks: 111222333L);
+        Assert.True(LanDatagramCodec.TryRead(echoBytes, out var echo));
+        Assert.Equal(LanDatagramKind.LatencyEcho, echo.Kind);
+        Assert.Equal(42UL, echo.SessionId);
+        var (echoedPerfTicks, echoedWallTicks, clientWallTicks) = LanDatagramCodec.ReadLatencyEcho(echo.Payload.Span);
+        Assert.Equal(123456789L, echoedPerfTicks);
+        Assert.Equal(987654321L, echoedWallTicks);
+        Assert.Equal(111222333L, clientWallTicks);
+    }
+
     [Theory]
     [InlineData(new byte[0])]
     [InlineData(new byte[] { 0x52, 0x43, 0x4E, 0x31 })]
     [InlineData(new byte[] { 0x52, 0x43, 0x4E, 0x31, 99, 0, 0, 0, 0, 0, 0, 0, 0 })]
+    // LatencyProbe (kind 5) header with no payload -- too short for LatencyProbeSize.
+    [InlineData(new byte[] { 0x52, 0x43, 0x4E, 0x31, 5, 0, 0, 0, 0, 0, 0, 0, 0 })]
+    // LatencyEcho (kind 6) header with only a probe-sized payload -- too short for LatencyEchoSize.
+    [InlineData(new byte[] { 0x52, 0x43, 0x4E, 0x31, 6, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 1, 2, 3, 4, 5, 6, 7, 8 })]
     public void InvalidDatagrams_AreRejected(byte[] bytes)
     {
         Assert.False(LanDatagramCodec.TryRead(bytes, out _));

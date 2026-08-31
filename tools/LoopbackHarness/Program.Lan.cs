@@ -125,12 +125,49 @@ internal static partial class Program
         var acquireTimeouts = 0;
         var sendTimes = new List<double>();
 
+        // Round-trip latency probe, sent ~1x/sec (docs/PHASE-1.md gate item 3).
+        // RTT is computed entirely from the host's own Stopwatch clock (send
+        // time vs. this same clock when the echo comes back), so no
+        // cross-machine clock sync is needed for it. The wall-clock fields
+        // only feed the offset *estimate*, useful for correlating host/client
+        // log timestamps once this runs across two real machines -- on
+        // localhost both ends share a clock, so offset is expected to be ~0.
+        var latencyBuffer = new byte[64]; // Fits LatencyEcho (37B) with room to spare.
+        var nextLatencyProbe = TimeSpan.Zero;
+        var latencyRttMs = new List<double>();
+        var latencyOffsetMs = new List<double>();
+
         try
         {
             while (!stopRequested &&
                    (targetFrames == 0 || encoded < targetFrames) &&
                    (runLimit is null || run.Elapsed < runLimit.Value))
             {
+                if (run.Elapsed >= nextLatencyProbe)
+                {
+                    nextLatencyProbe = run.Elapsed + TimeSpan.FromSeconds(1);
+                    socket.Send(LanDatagramCodec.CreateLatencyProbe(sessionId, Stopwatch.GetTimestamp(), DateTime.UtcNow.Ticks));
+                }
+
+                while (socket.Available > 0)
+                {
+                    var received = socket.Receive(latencyBuffer);
+                    if (!LanDatagramCodec.TryRead(latencyBuffer.AsSpan(0, received), out var echo) ||
+                        echo.Kind != LanDatagramKind.LatencyEcho ||
+                        echo.SessionId != sessionId)
+                    {
+                        continue;
+                    }
+
+                    var (probePerfTicks, probeWallTicks, clientWallTicks) = LanDatagramCodec.ReadLatencyEcho(echo.Payload.Span);
+                    var nowPerfTicks = Stopwatch.GetTimestamp();
+                    var rttMs = (nowPerfTicks - probePerfTicks) * 1000.0 / Stopwatch.Frequency;
+                    var rttTicks = (nowPerfTicks - probePerfTicks) * TimeSpan.TicksPerSecond / Stopwatch.Frequency;
+                    latencyRttMs.Add(rttMs);
+                    // Standard symmetric-latency estimate: offset = clientClock - hostClock - RTT/2.
+                    latencyOffsetMs.Add((clientWallTicks - probeWallTicks - rttTicks / 2.0) / TimeSpan.TicksPerMillisecond);
+                }
+
                 if (!duplicator.TryAcquireNextFrame(100, out var desktopFrame))
                 {
                     acquireTimeouts++;
@@ -201,6 +238,12 @@ internal static partial class Program
             logger.Info(
                 $"[lan-host] packetize+send avg={steady.Average():0.###}ms " +
                 $"min={steady.Min():0.###}ms max={steady.Max():0.###}ms (n={steady.Count}, warmup skipped).");
+        }
+        if (latencyRttMs.Count > 0)
+        {
+            logger.Info(
+                $"[lan-host] latency rtt avg={latencyRttMs.Average():0.###}ms min={latencyRttMs.Min():0.###}ms " +
+                $"max={latencyRttMs.Max():0.###}ms, clock-offset avg={latencyOffsetMs.Average():0.###}ms (n={latencyRttMs.Count}).");
         }
 
         if (targetFrames > 0 && encoded < targetFrames)
@@ -338,6 +381,12 @@ internal static partial class Program
                 {
                     session.Drain();
                     ended = true;
+                }
+                else if (message.Kind == LanDatagramKind.LatencyProbe)
+                {
+                    var (probePerfTicks, probeWallTicks) = LanDatagramCodec.ReadLatencyProbe(message.Payload.Span);
+                    var echo = LanDatagramCodec.CreateLatencyEcho(message.SessionId, probePerfTicks, probeWallTicks, DateTime.UtcNow.Ticks);
+                    socket.SendTo(echo, activeHost);
                 }
             }
         }
