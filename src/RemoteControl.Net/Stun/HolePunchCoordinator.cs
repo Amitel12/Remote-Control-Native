@@ -44,11 +44,24 @@ public sealed class HolePunchCoordinator
         if (candidates.Count == 0)
             throw new ArgumentException("At least one candidate endpoint is required.", nameof(candidates));
 
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         cts.CancelAfter(timeout);
 
         var receiveTask = ReceiveProbeAsync(cts.Token);
+        // Deliberately kept running for the full `timeout` even after our own
+        // receive succeeds, instead of being cancelled immediately -- a real
+        // asymmetric NAT (mobile-hotspot test, docs/PHASE-2.md) showed our side
+        // can receive the peer's probe in ~5s while the peer's own NAT mapping
+        // needs many more of *our* probes over the rest of its punch window to
+        // open; stopping early starved it and made its punch fail even though
+        // ours "succeeded". Fire-and-forget so it doesn't delay our own return.
         var sendTask = SendProbesAsync(candidates, probeInterval ?? TimeSpan.FromMilliseconds(200), cts.Token);
+        _ = sendTask.ContinueWith(t =>
+        {
+            if (t.IsFaulted)
+                _logger.Warn($"Punch probe loop ended with an error: {t.Exception!.GetBaseException().Message}");
+            cts.Dispose();
+        }, TaskScheduler.Default);
 
         try
         {
@@ -61,8 +74,8 @@ public sealed class HolePunchCoordinator
         }
         finally
         {
-            cts.Cancel(); // stop the send loop now that we're done either way.
-            try { await sendTask; } catch (OperationCanceledException) { /* expected */ }
+            if (cancellationToken.IsCancellationRequested)
+                cts.Cancel(); // caller asked us to stop -- honor that immediately rather than waiting out `timeout`.
         }
     }
 

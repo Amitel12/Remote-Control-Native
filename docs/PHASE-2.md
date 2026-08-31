@@ -133,6 +133,40 @@ before this session.
   for. Direct P2P alone cannot be assumed sufficient for Phase 2 -- a relay
   fallback is required for production use, not just a nice-to-have.
 
+## Real asymmetric-punch bug found and fixed (different network, same session)
+
+Same session, a third network: the client on a phone hotspot (public IP
+`141.226.89.188`, different phone/carrier than the earlier successful
+phone-hotspot test in this doc). Local and reflexive ports matched on the
+client's side, suggesting a lenient (not obviously symmetric) NAT -- yet the
+first attempt still failed in a new way: **the host's own log declared the
+punch successful (it received the client's probe in ~5s), while the client's
+own log independently timed out after the full 30s waiting for a probe that
+never arrived.**
+
+Root cause, found in `HolePunchCoordinator.PunchAsync`
+(`src/RemoteControl.Net/Stun/HolePunchCoordinator.cs`): as soon as a side
+received *any* probe from the peer, it cancelled its own outbound probe loop
+and returned immediately. That's fine when both directions open at the same
+rate, but here the client's NAT needed several more seconds of the host's
+probes to finish opening its own inbound mapping -- probes the host had
+already stopped sending the moment its own side succeeded, starving the
+client for the rest of its 30s window. One side "succeeding" is not proof
+the path is open in both directions.
+
+**Fix**: the send loop no longer stops when the local receive succeeds; it
+keeps sending probes for the full `timeout` budget in the background
+(fire-and-forget, so it doesn't delay the caller's own return once its side
+is confirmed). Rebuilt and retried immediately after: **punch succeeded in
+~9s, and this time video and input actually streamed** -- 2511 frames
+encoded/sent over ~100s at ~25fps (cellular-limited, not a target), RTT avg
+267.9ms (min 38.8ms, max 2234ms, real cellular jitter), 1196 real input
+events received with 606 correctly deduped as redundant copies. This is the
+first real confirmation of both Phase 3 reliability fixes
+(`InputStateSync`/`ReconcileHeldState` and the redundant-send/
+`InputSequenceDedup` pair) surviving actual internet jitter/loss end to end,
+not just the simulated `LossyProxy`/`--drop-input-percent` harness paths.
+
 ## What's still manual / open
 
 - **No deployed signaling server yet** to exchange `stun-candidates`
