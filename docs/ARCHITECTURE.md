@@ -285,16 +285,25 @@ Ordered so the two highest-risk unknowns surface first, not last.
    125%/150% DPI scaling, (b) typing English text with *both* an English and
    a non-English host layout, (c) fast drag overshoot + alt-tab mid-drag
    causing no stuck button on the host.
-5. **Phase 4 -- FEC + congestion control + adaptive bitrate.** The FEC
-   math itself (`RemoteControl.Net.Fec.ReedSolomonCodec`) and the
-   packetizer/depacketizer built on it are already implemented and tested
-   against synthetic loss (see Phase 0 above) -- what's left for this
-   phase is validating them against *real* network loss/jitter (not just
-   synthetic `Random`-driven loss in a unit test) via a lossy/reordering
-   UDP proxy, plus building `CongestionController` (doesn't exist yet)
-   to degrade encoder quality before frame delivery under constrained
-   bandwidth. **Milestone**: watchable stream under injected 1-5% loss
-   and constrained bandwidth, measured against the Phase 1 baseline.
+5. **Phase 4 -- FEC + congestion control + adaptive bitrate. Real
+   lossy/reordering validation done; adaptive bitrate not started.**
+   `tools/LossyProxy` (real UDP relay, bursty Gilbert-Elliott loss + genuine
+   packet reordering + jitter) validated FEC/the depacketizer against real
+   network impairment instead of just synthetic per-shard loss -- and found
+   a real bug: completed frames were decoded in network-arrival order, not
+   frame-index order, so real reordering (which independent per-shard loss
+   rarely triggers) could feed the H.264 decoder out of temporal sequence
+   and silently corrupt/drop frames with no error or counter. Fixed with a
+   bounded reorder buffer in the client session, the same "skip a stuck
+   frame rather than stall" philosophy `FramePacer` already applies to
+   timing, now applied to decode order too; see `docs/PHASE-4.md` for the
+   before/after real-hardware numbers. `CongestionController` (degrading
+   encoder quality under constrained bandwidth) doesn't exist yet, and
+   nothing has tested bandwidth-capping specifically. **Milestone**:
+   watchable stream under injected 1-5% loss and constrained bandwidth,
+   measured against the Phase 1 baseline -- loss/reordering half met on
+   loopback; bandwidth-constrained half not attempted; not yet run on a
+   real two-machine network.
 6. **Phase 5 -- Feature parity pass.** Multi-monitor swap; input
    arbitration (C# low-level hooks *do* reliably expose
    `LLMHF_INJECTED`/`LLKHF_INJECTED`, a real improvement over the

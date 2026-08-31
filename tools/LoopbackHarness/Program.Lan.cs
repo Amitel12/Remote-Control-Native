@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
@@ -8,6 +9,7 @@ using RemoteControl.Codec;
 using RemoteControl.Common;
 using RemoteControl.Net.Transport;
 using RemoteControl.Net.Video;
+using RemoteControl.Protocol;
 using RemoteControl.Render;
 using CodecColorConverter = RemoteControl.Codec.ColorConverter;
 
@@ -420,7 +422,8 @@ internal static partial class Program
                 logger.Info(
                     $"[lan-client] datagrams={datagramsReceived}, completed={session.CompletedFrames}, " +
                     $"decoded={session.Decoded}, presented={session.Presented}, malformed={malformedDatagrams}, " +
-                    $"incomplete={session.IncompleteFrames}, dropped-incomplete={session.DroppedIncompleteFrames}.");
+                    $"incomplete={session.IncompleteFrames}, dropped-incomplete={session.DroppedIncompleteFrames}, " +
+                    $"skipped-for-reordering={session.SkippedForReordering}.");
                 session.Dispose();
             }
         }
@@ -444,14 +447,25 @@ internal static partial class Program
 
     private sealed class LanClientVideoSession : IDisposable
     {
+        // How many completed-but-out-of-order frames to hold before giving up on the missing
+        // next-expected one and decoding ahead anyway -- bounded so a genuinely lost frame (not
+        // just reordered) can't stall the pipeline forever. Small on purpose, matching FramePacer's
+        // "near-zero, adaptive, not deep" jitter-buffer philosophy (see docs/ARCHITECTURE.md) --
+        // this just applies that same philosophy to decode *order*, not only timing.
+        private const int MaxReorderWindowFrames = 8;
+
         private readonly HardwareDecoder _decoder;
         private readonly SwapChainPresenter _presenter;
         private readonly VideoDepacketizer _depacketizer = new();
+        private readonly SortedDictionary<uint, byte[]> _pendingDecode = new();
         private readonly MfDevice _mfDevice;
         private readonly ILogger _logger;
         private readonly bool _verifyFrame;
         private bool _verificationSaved;
         private bool _drained;
+        private uint _nextFrameIndexToDecode;
+        private bool _sawFirstFrame;
+        public int SkippedForReordering { get; private set; }
 
         public ulong SessionId { get; }
         public int CompletedFrames { get; private set; }
@@ -509,9 +523,11 @@ internal static partial class Program
 
         public bool TryProcessVideoPacket(ReadOnlySpan<byte> packet)
         {
+            VideoPacketHeader header;
             byte[]? encodedFrame;
             try
             {
+                header = VideoPacketHeader.ReadFrom(packet);
                 encodedFrame = _depacketizer.AddPacket(packet);
             }
             catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
@@ -523,8 +539,41 @@ internal static partial class Program
                 return true;
 
             CompletedFrames++;
-            _decoder.Decode(encodedFrame, Present);
+            EnqueueForOrderedDecode(header.FrameIndex, encodedFrame);
             return true;
+        }
+
+        /// <summary>
+        /// A frame finishing reassembly doesn't mean it's safe to decode yet -- network reordering
+        /// (real, not just per-shard loss; see docs/PHASE-4.md) can let a later frame's shards all
+        /// arrive and complete before an earlier frame's do. Feeding H.264 IPPP frames to the decoder
+        /// out of temporal order corrupts its reference-frame state, so this holds completed frames
+        /// until they can be released in strictly increasing frame-index order.
+        /// </summary>
+        private void EnqueueForOrderedDecode(uint frameIndex, byte[] encodedFrame)
+        {
+            if (!_sawFirstFrame)
+            {
+                _sawFirstFrame = true;
+                _nextFrameIndexToDecode = frameIndex;
+            }
+
+            if (frameIndex < _nextFrameIndexToDecode)
+                return; // already released past this index -- the depacketizer's own watermark should prevent this, but never decode backwards regardless.
+
+            _pendingDecode[frameIndex] = encodedFrame;
+
+            while (_pendingDecode.Count >= MaxReorderWindowFrames && !_pendingDecode.ContainsKey(_nextFrameIndexToDecode))
+            {
+                SkippedForReordering++;
+                _nextFrameIndexToDecode++;
+            }
+
+            while (_pendingDecode.Remove(_nextFrameIndexToDecode, out var next))
+            {
+                _decoder.Decode(next, Present);
+                _nextFrameIndexToDecode++;
+            }
         }
 
         public void Resize(uint width, uint height) => _presenter.Resize(width, height);

@@ -1,0 +1,21 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Phase 4 (docs/ARCHITECTURE.md): a real lossy/reordering UDP proxy, so
+    RemoteControl.Net.Fec's Reed-Solomon parity recovery can be validated
+    against genuinely correlated/bursty loss and real out-of-order arrival,
+    not just the independent per-shard drop-percent dice roll LoopbackHarness
+    already has. Pure sockets, no Windows dependency.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\RemoteControl.Common\RemoteControl.Common.csproj" />
+  </ItemGroup>
+
+</Project>
