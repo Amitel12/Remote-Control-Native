@@ -232,21 +232,22 @@ Ordered so the two highest-risk unknowns surface first, not last.
    GPU `CopyResource` from the bindless
    Desktop Duplication surface into a reusable render-target texture; no
    CPU pixel copy is introduced.
-2. **Phase 1 -- LAN UDP streaming, two machines, no NAT traversal.**
-   The first direct-UDP harness slice is now implemented: a configuration/
-   ready handshake and session envelope wire `VideoPacketizer`/
-   `VideoDepacketizer` between separate host and client processes. A
-   300-frame 1080p localhost run completed 300/300 capture, encode,
-   reassembly, decode, and presentation with zero malformed or incomplete
-   frames; see `docs/PHASE-1.md`. FEC parity recovery, round-trip latency/
+2. **Phase 1 -- LAN UDP streaming, two machines, no NAT traversal. Done,
+   real-hardware verified.** A configuration/ready handshake and session
+   envelope wire `VideoPacketizer`/`VideoDepacketizer` between separate host
+   and client processes. FEC parity recovery, round-trip latency/
    clock-offset instrumentation, and a socket seam (`IUdpTransport`/
-   `UdpTransport`) are also implemented and real-hardware verified -- see
+   `UdpTransport`) are implemented and real-hardware verified -- see
    "FEC parity recovery" and "Latency instrumentation" in `docs/PHASE-1.md`.
    `EnetTransport` itself stays deferred to Phase 3's input/control channel
-   (see gate item 4 in `docs/PHASE-1.md` for why); the real two-machine run
-   is still open. **Milestone**: live cross-machine LAN streaming with
-   measured glass-to-glass latency as the baseline every later phase is
-   compared
+   (see gate item 4 in `docs/PHASE-1.md` for why). The real two-machine run
+   is done: host (RTX 3070, wired) streamed live to a second PC (Intel Iris
+   Plus Graphics, Wi-Fi) over a real home network, 300/300 captured through
+   presented, zero loss, avg 50.2ms glass-to-glass RTT. Host resolution-
+   change and Win+L recovery were also verified with that client connected --
+   see gate item 5 in `docs/PHASE-1.md`. **Milestone met**: live
+   cross-machine LAN streaming with measured glass-to-glass latency as the
+   baseline every later phase is compared
    against.
 3. **Phase 2 -- STUN + hole-punch + TURN fallback.** `StunClient`
    (already implemented, see above) against the deployed coturn VPS; C#

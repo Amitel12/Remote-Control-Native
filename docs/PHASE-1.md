@@ -231,15 +231,38 @@ end to end on real hardware on both ends.
    touching the video path. Verified on real hardware post-refactor: 100/100
    captured/encoded/completed/decoded/presented, unchanged from pre-refactor
    behavior.
-5. Repeat host resolution-change and Win+L recovery while the remote client is
-   connected.
+5. ~~Repeat host resolution-change and Win+L recovery while the remote client
+   is connected.~~ **Done** -- real two-machine run, host `--frames 0`
+   (indefinite), client `--frames 3000`. Two real events:
+   - **Resolution change** (1920x1080 -> 1680x1050 -> back to 1920x1080):
+     each change correctly hit `DesktopConfigurationChangedException` and
+     started a brand-new LAN session; the client picked up each new
+     `Configuration` datagram and reconnected cleanly every time (3 sessions
+     in one client run, zero manual restart needed).
+   - **Win+L**: correctly handled as access-loss only, *not* a mode change --
+     no new session was started, matching `docs/PHASE-0.md`'s prediction.
+     The client's presented video visibly froze/glitched during the lock (as
+     expected -- it cannot capture the secure desktop at all, confirming
+     Windows' own security boundary holds: the remote client never sees the
+     password-entry screen) and resumed cleanly on unlock, same session.
+   - Both events included stretches of "access lost / restored" churn
+     **longer than the client's own "no video for 10s" watchdog** (one ran
+     ~16s). The client did not disconnect. Why: that watchdog actually resets
+     on *any* received datagram, not specifically video -- and the host's
+     ~1/sec `LatencyProbe` heartbeat (see "Latency instrumentation" above)
+     keeps arriving even while capture is stalled, so it incidentally kept
+     the connection alive through the stall. Worth keeping as-is (it's a
+     genuine resilience property, not a bug), but worth naming: the watchdog
+     is really "no *traffic*, not specifically no *video*, for 10s".
+   - Full-run result: client reached **3000/3000 presented, zero malformed,
+     zero incomplete**, 404 dropped-incomplete (frames lost during the
+     access-loss churn itself, expected and non-fatal).
 
 The host is paced to the negotiated 60fps rather than sending at the captured
 display's refresh rate. The client retains a small reordering window and evicts
 older incomplete frames, reporting them as dropped instead of allowing one
 lost UDP shard to accumulate state or terminate the rest of the stream.
 
-The two-machine run and latency measurement have now passed (see "Real
-cross-machine LAN result" above) -- the core Phase 1 milestone is met. Only
-item 5 remains: resolution-change/Win+L recovery with a connected remote
-client is still untested.
+**All five Phase 1 gate items are now done.** The two-machine run, latency
+measurement, transport seam, and resolution-change/Win+L recovery with a
+connected client have all passed on real hardware. Phase 1 is complete.
