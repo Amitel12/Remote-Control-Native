@@ -12,6 +12,7 @@ public enum LanDatagramKind : byte
     LatencyEcho = 6,
     QualityReport = 7,
     Input = 8,
+    InputStateSync = 9,
 }
 
 public readonly record struct LanDatagram(
@@ -48,6 +49,12 @@ public static class LanDatagramCodec
     // RemoteControl.Net.Congestion.CongestionController, the only consumer.
     private const int QualityReportPayloadSize = 4;
     private const int QualityReportSize = CommonHeaderSize + QualityReportPayloadSize;
+
+    // InputStateSync payload: [HeldMask uint16] -- see RemoteControl.Input.RawInputCapture.GetHeldMask
+    // for the bit layout. Self-heals a lost MouseUp/KeyUp (docs/PHASE-3.md's known reliability gap)
+    // within one sync interval instead of leaving the host stuck until session end.
+    private const int InputStateSyncPayloadSize = 2;
+    private const int InputStateSyncSize = CommonHeaderSize + InputStateSyncPayloadSize;
 
     public static byte[] CreateConfiguration(
         ulong sessionId,
@@ -163,6 +170,18 @@ public static class LanDatagramCodec
         return datagram;
     }
 
+    /// <summary>Sent by the client periodically -- its current held-button/held-key snapshot, so the host can release anything it mistakenly still thinks is held after a lost KeyUp/MouseUp.</summary>
+    public static byte[] CreateInputStateSync(ulong sessionId, ushort heldMask)
+    {
+        var datagram = CreateHeader(LanDatagramKind.InputStateSync, sessionId, InputStateSyncSize);
+        BinaryPrimitives.WriteUInt16LittleEndian(datagram.AsSpan(CommonHeaderSize, 2), heldMask);
+        return datagram;
+    }
+
+    /// <summary>Reads a <see cref="LanDatagramKind.InputStateSync"/> datagram's payload.</summary>
+    public static ushort ReadInputStateSync(ReadOnlySpan<byte> payload) =>
+        BinaryPrimitives.ReadUInt16LittleEndian(payload[..2]);
+
     public static bool TryRead(ReadOnlySpan<byte> source, out LanDatagram datagram)
     {
         datagram = default;
@@ -211,6 +230,7 @@ public static class LanDatagramCodec
             case LanDatagramKind.LatencyEcho when source.Length == LatencyEchoSize:
             case LanDatagramKind.QualityReport when source.Length == QualityReportSize:
             case LanDatagramKind.Input when source.Length > CommonHeaderSize:
+            case LanDatagramKind.InputStateSync when source.Length == InputStateSyncSize:
                 datagram = new LanDatagram(
                     kind,
                     sessionId,

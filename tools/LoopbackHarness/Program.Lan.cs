@@ -226,6 +226,10 @@ internal static partial class Program
                             logger.Warn($"Discarding malformed input event: {ex.Message}");
                         }
                     }
+                    else if (message.Kind == LanDatagramKind.InputStateSync && inputInjector is not null)
+                    {
+                        inputInjector.ReconcileHeldState(LanDatagramCodec.ReadInputStateSync(message.Payload.Span));
+                    }
                 }
 
                 if (!duplicator.TryAcquireNextFrame(100, out var desktopFrame))
@@ -437,6 +441,12 @@ internal static partial class Program
         var lastReportedDropped = 0;
         var lastReportedSkipped = 0;
 
+        // Held-state resync (docs/PHASE-3.md): sent often enough that a single lost sync attempt
+        // (subject to the same --drop-input-percent simulation as everything else on this socket)
+        // doesn't meaningfully delay self-healing a lost MouseUp/KeyUp.
+        var nextInputStateSync = TimeSpan.Zero;
+        var inputStateSyncInterval = TimeSpan.FromMilliseconds(300);
+
         try
         {
             while (!window.IsClosed &&
@@ -446,6 +456,13 @@ internal static partial class Program
                 window.PumpEvents();
                 if (session is not null && window.TryConsumeResize(out var width, out var height))
                     session.Resize(width, height);
+
+                if (inputCapture is not null && activeHost is not null && session is not null && run.Elapsed >= nextInputStateSync)
+                {
+                    nextInputStateSync = run.Elapsed + inputStateSyncInterval;
+                    if (inputDropRng is null || inputDropRng.Next(100) >= dropInputPercent)
+                        socket.SendTo(LanDatagramCodec.CreateInputStateSync(session.SessionId, inputCapture.GetHeldMask()), activeHost);
+                }
 
                 if (session is not null && activeHost is not null && run.Elapsed >= nextQualityReport)
                 {

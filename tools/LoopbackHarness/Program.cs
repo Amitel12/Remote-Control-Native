@@ -43,7 +43,8 @@ internal static partial class Program
 
         var inputDemo = args.Contains("--input-demo");
         var inputCaptureDemo = args.Contains("--input-capture-demo");
-        if (networkModes == 0 && !inputDemo && !inputCaptureDemo && !RunStep0(logger))
+        var inputReconcileDemo = args.Contains("--input-reconcile-demo");
+        if (networkModes == 0 && !inputDemo && !inputCaptureDemo && !inputReconcileDemo && !RunStep0(logger))
             return 2;
 
         // MftProbe.Enumerate (Step 0) pairs its own MFStartup with an
@@ -113,6 +114,10 @@ internal static partial class Program
             else if (inputCaptureDemo)
             {
                 RunInputCaptureDemo(logger);
+            }
+            else if (inputReconcileDemo)
+            {
+                RunInputReconcileDemo(logger);
             }
             else if (args.Contains("--step1"))
             {

@@ -92,6 +92,17 @@ public class LanDatagramCodecTests
         Assert.Equal(new byte[] { 1, 2, 3, 4 }, datagram.Payload.ToArray());
     }
 
+    [Fact]
+    public void InputStateSync_RoundTrips()
+    {
+        var bytes = LanDatagramCodec.CreateInputStateSync(42, heldMask: 0b0000_0000_0000_0101);
+
+        Assert.True(LanDatagramCodec.TryRead(bytes, out var datagram));
+        Assert.Equal(LanDatagramKind.InputStateSync, datagram.Kind);
+        Assert.Equal(42UL, datagram.SessionId);
+        Assert.Equal((ushort)0b0000_0000_0000_0101, LanDatagramCodec.ReadInputStateSync(datagram.Payload.Span));
+    }
+
     [Theory]
     [InlineData(new byte[0])]
     [InlineData(new byte[] { 0x52, 0x43, 0x4E, 0x31 })]

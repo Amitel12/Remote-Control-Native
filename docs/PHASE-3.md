@@ -159,6 +159,46 @@ pre-existing idle-desktop capture-timeout issue (only 41/600 frames on the
 host, 40/600 on the client, because this host's own screen sat idle during
 the test) -- unrelated to input transmission, and not a new finding.
 
+## Reliability: a real problem, found, fixed, and verified
+
+`--drop-input-percent N` on the client (mirrors the video path's
+`--drop-percent`) deliberately drops N% of captured input events before
+sending, so a lost `MouseUp`/`KeyUp` specifically can be reproduced on
+demand instead of hoping for it under generic network loss.
+
+**Real two-machine result at 50% simulated loss confirmed this was a real
+problem, not a theoretical one.** Typing `hello whatsup` arrived as
+`helatsp` on the host -- every surviving character in correct relative
+order, just roughly half silently missing. That's independent per-character
+drop with zero recovery, exactly what best-effort UDP with no reliability
+layer predicts. (A live mid-session check of this machine's real mouse
+button state during the same test read `None` -- no stuck button that
+time -- but with few genuine click attempts in that run, that result alone
+wasn't strong evidence either way.)
+
+**Fix**: `LanDatagramKind.InputStateSync` -- the client sends its current
+held-button/held-key snapshot (`RawInputCapture.GetHeldMask()`, a `ushort`
+bitmask, layout in `InputHeldStateMask.cs`) roughly every 300ms, subject to
+the same `--drop-input-percent` simulation as everything else (realistic:
+a real lossy network wouldn't spare sync packets either, and periodic
+resend means one lost sync attempt just waits for the next). The host's
+`InputInjector.ReconcileHeldState(mask)` releases anything it believes is
+held that the mask says isn't -- self-healing a lost release within one
+sync interval instead of leaving it stuck until session end.
+Deliberately one-directional: it only ever *releases* on a mismatch, never
+synthesizes a *press* the mask claims should exist -- a stale/reordered
+sync causing a phantom press would be a worse failure than briefly waiting
+for the user's next real input.
+
+**Real-hardware automated verification** (`--input-reconcile-demo`, no
+network or second machine needed -- isolates the reconciliation logic from
+network conditions entirely): pressed a real left mouse button and a real
+Control key, deliberately never sent the matching release, then called
+`ReconcileHeldState` against an empty mask. `GetAsyncKeyState` (real OS
+key-state, not internal bookkeeping) confirmed both were genuinely held
+after press and genuinely released by reconciliation alone, with no
+explicit up-event involved. All 4 checks passed.
+
 ## What's not verified yet
 
 - **None of `docs/ARCHITECTURE.md`'s three explicit Phase 3 regression
@@ -172,13 +212,14 @@ the test) -- unrelated to input transmission, and not a new finding.
   above) but used a synthetic off-screen window to steal focus, not a real
   physical alt-tab keystroke or a real fast-overshoot drag past the window
   edge; worth a manual pass with real hardware input specifically.
-- **Reliability is a real open question, not yet tested.** The `Input`
-  datagram rides the same best-effort UDP as video -- a lost `MouseUp` or
-  `KeyUp` specifically (as opposed to a lost `MouseMove`, which the next
-  move corrects for free) could leave the host with a stuck virtual button
-  or held modifier that `InputInjector.ReleaseAllHeld()` only clears on
-  session end, not on one lost packet mid-session. Nothing has deliberately
-  dropped an up/down event yet (e.g. via `tools/LossyProxy`) to see whether
-  this is a real practical problem or a theoretical one -- that's the
-  natural next test before deciding whether it needs a reliability layer
-  (an app-level ACK/resync, or finally bringing in ENet's reliable channel).
+- **The InputStateSync fix hasn't been re-verified on a real lossy
+  two-machine run yet** -- `--input-reconcile-demo` proves the
+  reconciliation logic itself is correct in isolation, but the full loop
+  (real capture -> real drop -> real sync -> real reconcile, all over an
+  actual network) hasn't been rerun since the fix landed.
+- **Typed-text loss itself has no recovery**: `InputStateSync` only fixes
+  *held state* (a button/modifier stuck down). A dropped plain character
+  keystroke (no modifier, momentary, never tracked as "held") is simply
+  gone -- `helatsp` would still happen today. Fixing that needs either
+  retry/ACK for character events specifically or finally bringing in
+  ENet's reliable channel for input, neither of which exists yet.

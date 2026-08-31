@@ -57,6 +57,17 @@ public sealed class RawInputCapture : IDisposable
         _originalWndProc = Win32Native.SetWindowLongPtr(hWnd, Win32Native.GwlpWndProc, newWndProcPtr);
     }
 
+    /// <summary>Snapshot of currently-held buttons/named-keys -- see <see cref="InputHeldStateMask"/>. Sent periodically as InputStateSync so the host can self-correct a lost MouseUp/KeyUp (docs/PHASE-3.md).</summary>
+    public ushort GetHeldMask()
+    {
+        ushort mask = 0;
+        foreach (var button in _heldButtons)
+            mask = InputHeldStateMask.SetButton(mask, button);
+        foreach (var namedKey in _heldNamedKeys)
+            mask = InputHeldStateMask.SetNamedKey(mask, namedKey);
+        return mask;
+    }
+
     /// <summary>Force-releases every button/named-key this instance believes is currently held -- see class remarks on lesson #3.</summary>
     public void ForceReleaseAll()
     {

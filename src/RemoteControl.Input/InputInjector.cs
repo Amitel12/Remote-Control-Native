@@ -89,19 +89,50 @@ public sealed class InputInjector
     /// </summary>
     public void ReleaseAllHeld()
     {
-        // No MOVE/ABSOLUTE flags here -- release in place, don't yank the cursor somewhere arbitrary just to unstick a button.
+        foreach (var button in _heldButtons.ToArray())
+            ReleaseButton(button);
+        foreach (var namedKey in _heldNamedKeys.ToArray())
+            ReleaseNamedKey(namedKey);
+    }
+
+    /// <summary>
+    /// Releases anything this instance believes is held that
+    /// <paramref name="remoteHeldMask"/> (the capture side's own
+    /// <see cref="RawInputCapture.GetHeldMask"/>, arrived via
+    /// InputStateSync) says is *not* actually held -- self-heals a lost
+    /// MouseUp/KeyUp within one sync interval instead of leaving it stuck
+    /// until session end. Deliberately one-directional: never presses
+    /// something the mask claims is held that this instance doesn't have on
+    /// record -- a stale/reordered sync packet causing a phantom press would
+    /// be a worse failure than waiting for the user's next real input.
+    /// </summary>
+    public void ReconcileHeldState(ushort remoteHeldMask)
+    {
         foreach (var button in _heldButtons.ToArray())
         {
-            SendMouse(0, 0, ButtonFlag(button, down: false));
-            _heldButtons.Remove(button);
+            if (!InputHeldStateMask.HasButton(remoteHeldMask, button))
+                ReleaseButton(button);
         }
 
         foreach (var namedKey in _heldNamedKeys.ToArray())
         {
-            if (NamedKeyMapping.ByNamedKey.TryGetValue(namedKey, out var mapping))
-                SendKeyboard(mapping.Vk, mapping.Extended, down: false);
-            _heldNamedKeys.Remove(namedKey);
+            if (!InputHeldStateMask.HasNamedKey(remoteHeldMask, namedKey))
+                ReleaseNamedKey(namedKey);
         }
+    }
+
+    // No MOVE/ABSOLUTE flags here -- release in place, don't yank the cursor somewhere arbitrary just to unstick a button.
+    private void ReleaseButton(MouseButton button)
+    {
+        SendMouse(0, 0, ButtonFlag(button, down: false));
+        _heldButtons.Remove(button);
+    }
+
+    private void ReleaseNamedKey(NamedKey namedKey)
+    {
+        if (NamedKeyMapping.ByNamedKey.TryGetValue(namedKey, out var mapping))
+            SendKeyboard(mapping.Vk, mapping.Extended, down: false);
+        _heldNamedKeys.Remove(namedKey);
     }
 
     private static (int Dx, int Dy) ToVirtualDesktopCoordinates(float x, float y, int left, int top, int width, int height)
