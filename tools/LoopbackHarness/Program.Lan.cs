@@ -136,6 +136,12 @@ internal static partial class Program
         var inputEventsReceived = 0L;
         var inputEventsDuplicateOrStale = 0L;
         var inputSequenceDedup = new InputSequenceDedup();
+        // Newest input sequence injected so far -- stamped onto each captured frame (as a
+        // FrameInputMarker) so the client can measure its own input-to-present latency
+        // (docs/PHASE-4.md). Plain assignment, not monotonic: dedup accepts by membership, so
+        // a late redundant copy of an earlier sequence can land after a newer one; the client
+        // filters out markers that go backwards.
+        uint? lastInjectedInputSequence = null;
         var run = Stopwatch.StartNew();
         TimeSpan? runLimit = targetFrames == 0
             ? null
@@ -248,6 +254,7 @@ internal static partial class Program
                                 var inputEvent = InputEventCodec.Decode(encodedEvent.Span);
                                 inputInjector.Inject(inputEvent, (int)selected.Left, (int)selected.Top, (int)selected.Width, (int)selected.Height);
                                 inputEventsReceived++;
+                                lastInjectedInputSequence = sequenceNumber;
                             }
                             else
                             {
@@ -280,10 +287,21 @@ internal static partial class Program
                         desktopFrame!.Texture,
                         sampleTime,
                         sampleDuration);
+                    // ponytail: assumes NVENC's low-latency P1 config emits exactly one decoded
+                    // output per Encode call (matches captured==encoded seen on every real run
+                    // tonight). If a future run ever shows those diverge, upgrade this single
+                    // snapshot to a Queue<uint?> enqueued here, dequeued once per callback below.
+                    var inputSequenceAtCapture = lastInjectedInputSequence;
                     using (nv12)
                     {
                         encoder.Encode(nv12, encodedBytes =>
                         {
+                            // Sent before this frame's own video shards (below), and before the
+                            // send timer starts, so it doesn't pollute the packetize+send stats --
+                            // see docs/PHASE-4.md's input-to-present latency measurement.
+                            if (inputSequenceAtCapture is { } injectedSequence)
+                                socket.Send(LanDatagramCodec.CreateFrameInputMarker(sessionId, injectedSequence));
+
                             var sendTimer = Stopwatch.StartNew();
                             encoded++;
                             encodedBytesSent += encodedBytes.Length;
@@ -451,6 +469,16 @@ internal static partial class Program
         var inputEventsSent = 0L; // physical sends that succeeded -- up to 2x captured, since each is sent twice.
         var inputEventsDroppedSimulated = 0L;
         var nextInputSequence = 0u;
+
+        // Input-to-present latency (docs/PHASE-4.md) -- not true glass-to-glass: SwapChainPresenter
+        // presents with syncInterval 0, so this stops at the queued flip, before scanout (~5-20ms
+        // uncounted). Both ends of the measurement are this process's own Stopwatch, so no
+        // cross-machine clock sync is needed -- see FrameInputMarker's remarks in LanDatagramCodec.
+        var pendingInputSends = new Queue<(uint Sequence, long Ticks)>();
+        var inputToPresentMs = new List<double>();
+        uint? lastMarkerSequence = null;
+        long? armedSendTicks = null;
+
         if (inputCapture is not null)
         {
             // Redundant send (docs/PHASE-3.md): a lost plain keystroke (no modifier, so
@@ -483,6 +511,18 @@ internal static partial class Program
                 var encodedEvent = inputSendBuffer[..length]; // copied: the shared scratch buffer isn't safe to reference across the delayed resend below.
                 var sequenceNumber = nextInputSequence++;
                 var sessionId = activeSession.SessionId;
+
+                // Mouse moves fire at report rate (125-1000Hz), so "newest input at capture time"
+                // would almost always be a move injected ~1ms ago -- measuring those would collapse
+                // input-to-present down to downstream-only latency, silently hiding the entire
+                // client->host leg most of the time. Discrete events are also what a user actually
+                // judges responsiveness by.
+                if (inputEvent is not InputEvent.MouseMove)
+                {
+                    if (pendingInputSends.Count >= 256)
+                        pendingInputSends.Dequeue();
+                    pendingInputSends.Enqueue((sequenceNumber, Stopwatch.GetTimestamp()));
+                }
 
                 SendInputCopy(sequenceNumber, encodedEvent, host, sessionId);
                 _ = Task.Run(async () =>
@@ -570,6 +610,9 @@ internal static partial class Program
                             verifyFrame,
                             logger);
                         activeHost = sender;
+                        pendingInputSends.Clear();
+                        lastMarkerSequence = null;
+                        armedSendTicks = null;
                     }
 
                     if (activeHost is not null && sender.Equals(activeHost))
@@ -582,8 +625,16 @@ internal static partial class Program
 
                 if (message.Kind == LanDatagramKind.Video)
                 {
+                    var presentedBefore = session.Presented;
                     if (!session.TryProcessVideoPacket(message.Payload.Span))
                         malformedDatagrams++;
+                    else if (armedSendTicks is { } sentAt && session.Presented > presentedBefore)
+                    {
+                        // Reassembly -> decode -> present all run synchronously inside the call
+                        // above, so this is the frame the armed marker announced.
+                        armedSendTicks = null;
+                        inputToPresentMs.Add((Stopwatch.GetTimestamp() - sentAt) * 1000.0 / Stopwatch.Frequency);
+                    }
                 }
                 else if (message.Kind == LanDatagramKind.End)
                 {
@@ -595,6 +646,24 @@ internal static partial class Program
                     var (probePerfTicks, probeWallTicks) = LanDatagramCodec.ReadLatencyProbe(message.Payload.Span);
                     var echo = LanDatagramCodec.CreateLatencyEcho(message.SessionId, probePerfTicks, probeWallTicks, DateTime.UtcNow.Ticks);
                     socket.SendTo(echo, activeHost);
+                }
+                else if (message.Kind == LanDatagramKind.FrameInputMarker)
+                {
+                    // Level-triggered by the host (one per frame), so a lost marker self-heals on
+                    // the next frame. Wrap-safe "strictly newer" filter: a reordered older marker
+                    // must not re-arm an input already measured.
+                    var injected = LanDatagramCodec.ReadFrameInputMarker(message.Payload.Span);
+                    if (lastMarkerSequence is null || (int)(injected - lastMarkerSequence.Value) > 0)
+                    {
+                        lastMarkerSequence = injected;
+                        if (armedSendTicks is null &&
+                            pendingInputSends.TryPeek(out var pending) &&
+                            (int)(injected - pending.Sequence) >= 0)
+                        {
+                            pendingInputSends.Dequeue();
+                            armedSendTicks = pending.Ticks;
+                        }
+                    }
                 }
             }
         }
@@ -611,6 +680,13 @@ internal static partial class Program
                     $"reorder-window-ended={session.ReorderWindowFrames}" +
                     $"{(inputCapture is not null ? $", input-events-captured={inputEventsCaptured}, input-events-sent={inputEventsSent}" : "")}" +
                     $"{(dropInputPercent > 0 ? $", input-events-dropped-simulated={inputEventsDroppedSimulated}" : "")}.");
+                if (inputToPresentMs.Count > 0)
+                {
+                    logger.Info(
+                        $"[lan-client] input-to-present avg={inputToPresentMs.Average():0.###}ms " +
+                        $"min={inputToPresentMs.Min():0.###}ms max={inputToPresentMs.Max():0.###}ms " +
+                        $"(n={inputToPresentMs.Count}, discrete input events only, present queued not scanned out).");
+                }
                 session.Dispose();
             }
         }

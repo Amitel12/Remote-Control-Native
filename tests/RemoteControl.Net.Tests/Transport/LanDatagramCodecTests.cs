@@ -105,6 +105,17 @@ public class LanDatagramCodecTests
         Assert.Equal((ushort)0b0000_0000_0000_0101, LanDatagramCodec.ReadInputStateSync(datagram.Payload.Span));
     }
 
+    [Fact]
+    public void FrameInputMarker_RoundTrips()
+    {
+        var bytes = LanDatagramCodec.CreateFrameInputMarker(42, injectedInputSequence: 1337);
+
+        Assert.True(LanDatagramCodec.TryRead(bytes, out var datagram));
+        Assert.Equal(LanDatagramKind.FrameInputMarker, datagram.Kind);
+        Assert.Equal(42UL, datagram.SessionId);
+        Assert.Equal(1337u, LanDatagramCodec.ReadFrameInputMarker(datagram.Payload.Span));
+    }
+
     [Theory]
     [InlineData(new byte[0])]
     [InlineData(new byte[] { 0x52, 0x43, 0x4E, 0x31 })]
@@ -115,6 +126,8 @@ public class LanDatagramCodecTests
     [InlineData(new byte[] { 0x52, 0x43, 0x4E, 0x31, 6, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 1, 2, 3, 4, 5, 6, 7, 8 })]
     // QualityReport (kind 7) header with no payload -- too short for QualityReportSize.
     [InlineData(new byte[] { 0x52, 0x43, 0x4E, 0x31, 7, 0, 0, 0, 0, 0, 0, 0, 0 })]
+    // FrameInputMarker (kind 10) header with no payload -- too short for FrameInputMarkerSize.
+    [InlineData(new byte[] { 0x52, 0x43, 0x4E, 0x31, 10, 0, 0, 0, 0, 0, 0, 0, 0 })]
     public void InvalidDatagrams_AreRejected(byte[] bytes)
     {
         Assert.False(LanDatagramCodec.TryRead(bytes, out _));

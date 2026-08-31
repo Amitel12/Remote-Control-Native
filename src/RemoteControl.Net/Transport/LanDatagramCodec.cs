@@ -13,6 +13,7 @@ public enum LanDatagramKind : byte
     QualityReport = 7,
     Input = 8,
     InputStateSync = 9,
+    FrameInputMarker = 10,
 }
 
 public readonly record struct LanDatagram(
@@ -55,6 +56,16 @@ public static class LanDatagramCodec
     // within one sync interval instead of leaving the host stuck until session end.
     private const int InputStateSyncPayloadSize = 2;
     private const int InputStateSyncSize = CommonHeaderSize + InputStateSyncPayloadSize;
+
+    // FrameInputMarker payload: [InjectedInputSequence uint32] -- the newest Input sequence
+    // number the host had injected when it captured the frame whose video shards follow this
+    // datagram. Sent host -> client immediately before that frame's video shards, so the
+    // client can stop a clock it started itself when it sent that input (see
+    // tools/LoopbackHarness's input-to-present latency measurement, docs/PHASE-4.md). Both
+    // timestamps are the client's own Stopwatch, so no cross-machine clock sync is involved.
+    // Best-effort like LatencyProbe -- a lost marker just costs one sample.
+    private const int FrameInputMarkerPayloadSize = 4;
+    private const int FrameInputMarkerSize = CommonHeaderSize + FrameInputMarkerPayloadSize;
 
     public static byte[] CreateConfiguration(
         ulong sessionId,
@@ -199,6 +210,18 @@ public static class LanDatagramCodec
     public static ushort ReadInputStateSync(ReadOnlySpan<byte> payload) =>
         BinaryPrimitives.ReadUInt16LittleEndian(payload[..2]);
 
+    /// <summary>Sent by the host immediately before each frame's video shards -- the newest <see cref="LanDatagramKind.Input"/> sequence number it had injected when that frame was captured.</summary>
+    public static byte[] CreateFrameInputMarker(ulong sessionId, uint injectedInputSequence)
+    {
+        var datagram = CreateHeader(LanDatagramKind.FrameInputMarker, sessionId, FrameInputMarkerSize);
+        BinaryPrimitives.WriteUInt32LittleEndian(datagram.AsSpan(CommonHeaderSize, FrameInputMarkerPayloadSize), injectedInputSequence);
+        return datagram;
+    }
+
+    /// <summary>Reads a <see cref="LanDatagramKind.FrameInputMarker"/> datagram's payload.</summary>
+    public static uint ReadFrameInputMarker(ReadOnlySpan<byte> payload) =>
+        BinaryPrimitives.ReadUInt32LittleEndian(payload[..FrameInputMarkerPayloadSize]);
+
     public static bool TryRead(ReadOnlySpan<byte> source, out LanDatagram datagram)
     {
         datagram = default;
@@ -248,6 +271,7 @@ public static class LanDatagramCodec
             case LanDatagramKind.QualityReport when source.Length == QualityReportSize:
             case LanDatagramKind.Input when source.Length > CommonHeaderSize + InputSequenceNumberSize:
             case LanDatagramKind.InputStateSync when source.Length == InputStateSyncSize:
+            case LanDatagramKind.FrameInputMarker when source.Length == FrameInputMarkerSize:
                 datagram = new LanDatagram(
                     kind,
                     sessionId,
