@@ -45,11 +45,11 @@ internal static partial class Program
         return port;
     }
 
-    private static void RunLanHost(ILogger logger, IPEndPoint clientEndpoint, int targetFrames, int parityPercent, int dropPercent, bool adaptiveBitrate, bool remoteInput)
+    private static void RunLanHost(ILogger logger, IPEndPoint clientEndpoint, int targetFrames, int parityPercent, int dropPercent, bool adaptiveBitrate, bool adaptiveFec, bool remoteInput)
     {
         using IUdpTransport socket = new UdpTransport(LanReceiveBufferSize, LanReceiveBufferSize);
         socket.Connect(clientEndpoint);
-        RunLanHostWithTransport(logger, socket, clientEndpoint.ToString(), targetFrames, parityPercent, dropPercent, adaptiveBitrate, remoteInput);
+        RunLanHostWithTransport(logger, socket, clientEndpoint.ToString(), targetFrames, parityPercent, dropPercent, adaptiveBitrate, adaptiveFec, remoteInput);
     }
 
     /// <summary>
@@ -59,13 +59,13 @@ internal static partial class Program
     /// NAT mapping and need a fresh hole-punch.
     /// </summary>
     private static void RunLanHostWithTransport(
-        ILogger logger, IUdpTransport socket, string peerDescription, int targetFrames, int parityPercent, int dropPercent, bool adaptiveBitrate, bool remoteInput)
+        ILogger logger, IUdpTransport socket, string peerDescription, int targetFrames, int parityPercent, int dropPercent, bool adaptiveBitrate, bool adaptiveFec, bool remoteInput)
     {
         while (true)
         {
             try
             {
-                RunLanHostSession(logger, socket, peerDescription, targetFrames, parityPercent, dropPercent, adaptiveBitrate, remoteInput);
+                RunLanHostSession(logger, socket, peerDescription, targetFrames, parityPercent, dropPercent, adaptiveBitrate, adaptiveFec, remoteInput);
                 return;
             }
             catch (DesktopConfigurationChangedException ex)
@@ -76,10 +76,10 @@ internal static partial class Program
     }
 
     private static void RunLanHostSession(
-        ILogger logger, IUdpTransport socket, string peerDescription, int targetFrames, int parityPercent, int dropPercent, bool adaptiveBitrate, bool remoteInput)
+        ILogger logger, IUdpTransport socket, string peerDescription, int targetFrames, int parityPercent, int dropPercent, bool adaptiveBitrate, bool adaptiveFec, bool remoteInput)
     {
         logger.Info($"Phase 1 LAN host: capture -> native NVENC -> UDP {peerDescription}" +
-                    $"{(parityPercent > 0 ? $", {parityPercent}% FEC parity" : "")}" +
+                    $"{(adaptiveFec ? $", adaptive FEC (ceiling {(parityPercent > 0 ? parityPercent : 50)}% parity)" : parityPercent > 0 ? $", {parityPercent}% FEC parity" : "")}" +
                     $"{(dropPercent > 0 ? $", simulating {dropPercent}% video-shard loss (diagnostic only)" : "")}" +
                     $"{(adaptiveBitrate ? ", adaptive bitrate enabled" : "")}.");
 
@@ -118,7 +118,13 @@ internal static partial class Program
             FpsDenominator);
         WaitForLanClient(socket, configuration, sessionId, logger);
 
-        var packetizer = new VideoPacketizer(parityRatio: parityPercent / 100.0);
+        // Adaptive FEC (docs/PHASE-4.md): starts at 0 parity and scales up off the client's
+        // measured QualityReport loss rate instead of committing to one fixed ratio for the
+        // whole session -- avoids wasting bandwidth on a clean link and under-protecting on a
+        // bad one. --parity-percent still sets the ceiling it's clamped to (default 50%) so it
+        // can never balloon unboundedly on a very lossy link.
+        var parityCeiling = parityPercent > 0 ? parityPercent / 100.0 : 0.5;
+        var packetizer = new VideoPacketizer(parityRatio: adaptiveFec ? 0.0 : parityPercent / 100.0);
         var dropRng = dropPercent > 0 ? new Random() : null;
 
         // Injects the client's captured mouse/keyboard onto this machine's real desktop -- see
@@ -208,12 +214,25 @@ internal static partial class Program
                                 encoder.SetBitrate(newBitrate);
                         }
                     }
-                    else if (message.Kind == LanDatagramKind.QualityReport && congestion is not null)
+                    else if (message.Kind == LanDatagramKind.QualityReport && (congestion is not null || adaptiveFec))
                     {
                         var lossRate = LanDatagramCodec.ReadQualityReport(message.Payload.Span);
-                        var newBitrate = congestion.OnSample(frameLossRate: lossRate, rttMs: null);
-                        if (newBitrate != encoder.CurrentBitrateBps)
-                            encoder.SetBitrate(newBitrate);
+                        if (congestion is not null)
+                        {
+                            var newBitrate = congestion.OnSample(frameLossRate: lossRate, rttMs: null);
+                            if (newBitrate != encoder.CurrentBitrateBps)
+                                encoder.SetBitrate(newBitrate);
+                        }
+
+                        if (adaptiveFec)
+                        {
+                            // 2x safety margin over the measured average -- a single loss-rate sample
+                            // doesn't capture burst variance, and under-protecting costs a corrupted
+                            // frame while over-protecting only costs a little bandwidth. Simple linear
+                            // heuristic, not a real burst-loss model -- tighten if real testing shows
+                            // it over/under-shoots.
+                            packetizer.ParityRatio = Math.Clamp(lossRate * 2.0, 0.0, parityCeiling);
+                        }
                     }
                     else if (message.Kind == LanDatagramKind.Input && inputInjector is not null)
                     {
@@ -335,6 +354,10 @@ internal static partial class Program
         if (congestion is not null)
         {
             logger.Info($"[lan-host] adaptive bitrate ended at {encoder.CurrentBitrateBps / 1_000_000.0:0.##}Mbps.");
+        }
+        if (adaptiveFec)
+        {
+            logger.Info($"[lan-host] adaptive FEC ended at {packetizer.ParityRatio * 100:0.#}% parity (ceiling {parityCeiling * 100:0.#}%).");
         }
         if (inputInjector is not null)
         {

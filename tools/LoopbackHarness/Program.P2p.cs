@@ -37,7 +37,7 @@ internal static partial class Program
 
     private static void RunP2pHost(
         ILogger logger, int localPort, IPEndPoint stunServer, IPEndPoint? remoteCandidate,
-        int targetFrames, int parityPercent, int dropPercent, bool adaptiveBitrate, bool remoteInput)
+        int targetFrames, int parityPercent, int dropPercent, bool adaptiveBitrate, bool adaptiveFec, bool remoteInput)
     {
         using var rawSocket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp)
         {
@@ -49,7 +49,7 @@ internal static partial class Program
         var peer = DiscoverAndPunchAsync(logger, rawSocket, stunServer, remoteCandidate).GetAwaiter().GetResult();
         IUdpTransport socket = new UdpTransport(rawSocket);
         socket.Connect(peer);
-        RunLanHostWithTransport(logger, socket, $"{peer} (P2P, hole-punched)", targetFrames, parityPercent, dropPercent, adaptiveBitrate, remoteInput);
+        RunLanHostWithTransport(logger, socket, $"{peer} (P2P, hole-punched)", targetFrames, parityPercent, dropPercent, adaptiveBitrate, adaptiveFec, remoteInput);
     }
 
     private static void RunP2pClient(

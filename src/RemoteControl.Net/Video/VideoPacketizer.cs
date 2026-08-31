@@ -26,7 +26,18 @@ public sealed class VideoPacketizer
     public const int MaxTotalShards = 256;
 
     private readonly int _shardPayloadSize;
-    private readonly double _parityRatio;
+    private double _parityRatio;
+
+    /// <summary>
+    /// Data:parity shard ratio, mutable so a host can adapt it frame-to-frame off measured
+    /// loss (docs/PHASE-4.md "adaptive FEC") instead of committing to one fixed value for the
+    /// whole session -- the same live-tuning approach already used for encoder bitrate.
+    /// </summary>
+    public double ParityRatio
+    {
+        get => _parityRatio;
+        set => _parityRatio = value >= 0 ? value : throw new ArgumentOutOfRangeException(nameof(value));
+    }
 
     public VideoPacketizer(int shardPayloadSize = DefaultShardPayloadSize, double parityRatio = 0.25)
     {
