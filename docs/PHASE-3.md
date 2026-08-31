@@ -3,10 +3,11 @@
 ## Status
 
 **Both halves implemented and real-hardware verified, including the
-lesson #3 safety net, and now wired together end to end over the network
-(real-hardware verified on loopback). Not done -- see "What's not verified
-yet" below before treating this phase as complete (none of the three
-explicit regression checks have been run, and reliability of the network
+lesson #3 safety net, and now wired together end to end over the network --
+verified on both loopback and a real two-machine network. Not done -- see
+"What's not verified yet" below before treating this phase as complete
+(none of the three explicit regression checks have been run, and
+reliability of the network
 channel itself is a known open question).**
 
 `RemoteControl.Input.InputInjector` replays `RemoteControl.Protocol.InputEvent`
@@ -148,6 +149,16 @@ tested), so `--remote-input` was silently unrecognized. Worth remembering
 for next time: push and confirm the pulled commit hash matches *before*
 asking the other machine to test a brand-new flag.
 
+Once the client actually had the code (after `git pull` + rebuild), the
+real two-machine run confirmed it: **`input-events-received=37`** on this
+host, matching the client's own **`input-events-sent=37`** exactly -- zero
+loss on this run -- from real mouse/keyboard activity on the second PC
+over the actual home network. The exact gap this section is about, closed
+for real, not just in theory. That same run's *video* side hit the
+pre-existing idle-desktop capture-timeout issue (only 41/600 frames on the
+host, 40/600 on the client, because this host's own screen sat idle during
+the test) -- unrelated to input transmission, and not a new finding.
+
 ## What's not verified yet
 
 - **None of `docs/ARCHITECTURE.md`'s three explicit Phase 3 regression
@@ -161,9 +172,6 @@ asking the other machine to test a brand-new flag.
   above) but used a synthetic off-screen window to steal focus, not a real
   physical alt-tab keystroke or a real fast-overshoot drag past the window
   edge; worth a manual pass with real hardware input specifically.
-- **The end-to-end loop hasn't been proven on a real two-machine network
-  yet** -- only loopback so far (see above); the one real attempt failed
-  for a process reason (stale client build) before it could test anything.
 - **Reliability is a real open question, not yet tested.** The `Input`
   datagram rides the same best-effort UDP as video -- a lost `MouseUp` or
   `KeyUp` specifically (as opposed to a lost `MouseMove`, which the next
