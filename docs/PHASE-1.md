@@ -2,7 +2,8 @@
 
 ## Status
 
-**Step 1, two-process localhost stream: CONFIRMED working on real hardware.**
+**Real two-machine LAN streaming: CONFIRMED working on real hardware.** See
+"Real cross-machine LAN result" below for the actual run.
 
 `tools/LoopbackHarness` now has separate LAN roles:
 
@@ -11,10 +12,12 @@
 - `--lan-client <port>` waits for stream configuration, creates the D3D11
   decoder and swap-chain presenter, reassembles frames, decodes, and presents.
 
-The first slice uses a direct UDP socket so the capture/encode process and the
-decode/present process are genuinely separated before adding NAT traversal or
-control channels. The planned `EnetTransport` abstraction is not implemented
-yet. Video uses the existing `VideoPacketizer`/`VideoDepacketizer`, with parity
+The first slice uses a direct UDP socket, now behind `IUdpTransport`/
+`UdpTransport` (see gate item 4 below), so the capture/encode process and
+the decode/present process are genuinely separated before adding NAT
+traversal or control channels. `EnetTransport` remains deliberately
+unimplemented -- see item 4 for why. Video uses the existing
+`VideoPacketizer`/`VideoDepacketizer`, with parity
 off by default (`--parity-percent 0`) for the low-loss LAN baseline above --
 see "FEC parity recovery" below for turning it on and what it actually buys.
 
@@ -167,15 +170,48 @@ Tightening that (e.g. draining echoes on a separate thread/timer instead of
 once per captured frame) is a reasonable follow-up once real network numbers
 make it worth the precision.
 
+## Real cross-machine LAN result
+
+First genuine two-machine run, both roles on the actual harness over a real
+home network (same router): host = this RTX 3070 PC on wired 2.5GbE
+Ethernet (`192.168.1.114`, no Wi-Fi adapter present on this machine at all);
+client = a second Windows PC with Intel(R) Iris(R) Plus Graphics, on Wi-Fi
+(`192.168.1.118`). 1920x1080@60, native NVENC P1 ultra-low-latency IPPP,
+8Mbps CBR, 300 frames, no FEC/loss simulation flags:
+
+- Host: **300 captured / 300 encoded at 59.83fps**, 2,964 video datagrams,
+  3,554.5KiB on the LAN envelope, zero acquisition timeouts.
+- Client: **300 completed / 300 decoded / 300 presented**, zero malformed,
+  incomplete, or dropped-incomplete frames.
+- `[lan-host] latency rtt avg=50.164ms min=20.38ms max=92.534ms,
+  clock-offset avg=3041.493ms (n=5)` -- the first *real* glass-to-glass
+  number (not the localhost self-loop case described above). The polling-
+  granularity caveat from "Latency instrumentation" still applies (n=5 is a
+  short run), and the ~3s clock-offset reading is independently corroborated
+  by the two machines' own log timestamps differing by almost exactly that
+  much.
+- The Wi-Fi leg was clean -- zero loss, so this run didn't exercise FEC
+  against real loss; that path is still only proven against the simulated
+  `--drop-percent` loss above. A fully wired-both-ends comparison wasn't
+  possible with this host's hardware (no Wi-Fi adapter), so item 2's "wired,
+  then Wi-Fi" ask is only half-covered -- the client's leg was Wi-Fi, the
+  host's was wired, both stitched into one real cross-machine run rather than
+  two separate same-medium runs.
+
+This is the milestone the whole Phase 1 gate was blocking on: live
+cross-machine LAN streaming with a measured glass-to-glass baseline,
+end to end on real hardware on both ends.
+
 ## Remaining Phase 1 gate
 
-1. Run the same roles on two Windows PCs connected to the same router.
-2. Record packet/frame counters on wired Ethernet, then Wi-Fi: read the new
-   `[lan-host] latency rtt/clock-offset` line for the first real
-   cross-machine numbers (see "Latency instrumentation" above for its actual
-   precision floor before trusting the number), and try `--parity-percent`
-   against whatever real loss shows up there (see "FEC parity recovery"
-   above for what it fixed against simulated loss).
+1. ~~Run the same roles on two Windows PCs connected to the same router.~~
+   **Done** -- see "Real cross-machine LAN result" above.
+2. ~~Record packet/frame counters on wired Ethernet, then Wi-Fi...~~ **Done,
+   with a caveat** -- see "Real cross-machine LAN result" above for the real
+   numbers and why it's a wired-host/Wi-Fi-client run rather than two
+   separate same-medium runs. Real loss (to exercise `--parity-percent`
+   against) didn't show up on this particular run -- worth another pass if a
+   noisier Wi-Fi network is available later.
 3. ~~Add latency timestamps/echo clock-offset estimation~~ **Done** -- see
    "Latency instrumentation" above. The mechanism round-trips correctly on the
    localhost test; the real LAN glass-to-glass number is still item 1's gate,
@@ -203,5 +239,7 @@ display's refresh rate. The client retains a small reordering window and evicts
 older incomplete frames, reporting them as dropped instead of allowing one
 lost UDP shard to accumulate state or terminate the rest of the stream.
 
-Do not claim the Phase 1 milestone until the two-machine run and latency
-measurement pass.
+The two-machine run and latency measurement have now passed (see "Real
+cross-machine LAN result" above) -- the core Phase 1 milestone is met. Only
+item 5 remains: resolution-change/Win+L recovery with a connected remote
+client is still untested.
