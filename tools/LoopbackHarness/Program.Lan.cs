@@ -7,6 +7,7 @@ using System.Security.Cryptography;
 using RemoteControl.Capture;
 using RemoteControl.Codec;
 using RemoteControl.Common;
+using RemoteControl.Input;
 using RemoteControl.Net.Congestion;
 using RemoteControl.Net.Transport;
 using RemoteControl.Net.Video;
@@ -44,11 +45,11 @@ internal static partial class Program
         return port;
     }
 
-    private static void RunLanHost(ILogger logger, IPEndPoint clientEndpoint, int targetFrames, int parityPercent, int dropPercent, bool adaptiveBitrate)
+    private static void RunLanHost(ILogger logger, IPEndPoint clientEndpoint, int targetFrames, int parityPercent, int dropPercent, bool adaptiveBitrate, bool remoteInput)
     {
         using IUdpTransport socket = new UdpTransport(LanReceiveBufferSize, LanReceiveBufferSize);
         socket.Connect(clientEndpoint);
-        RunLanHostWithTransport(logger, socket, clientEndpoint.ToString(), targetFrames, parityPercent, dropPercent, adaptiveBitrate);
+        RunLanHostWithTransport(logger, socket, clientEndpoint.ToString(), targetFrames, parityPercent, dropPercent, adaptiveBitrate, remoteInput);
     }
 
     /// <summary>
@@ -58,13 +59,13 @@ internal static partial class Program
     /// NAT mapping and need a fresh hole-punch.
     /// </summary>
     private static void RunLanHostWithTransport(
-        ILogger logger, IUdpTransport socket, string peerDescription, int targetFrames, int parityPercent, int dropPercent, bool adaptiveBitrate)
+        ILogger logger, IUdpTransport socket, string peerDescription, int targetFrames, int parityPercent, int dropPercent, bool adaptiveBitrate, bool remoteInput)
     {
         while (true)
         {
             try
             {
-                RunLanHostSession(logger, socket, peerDescription, targetFrames, parityPercent, dropPercent, adaptiveBitrate);
+                RunLanHostSession(logger, socket, peerDescription, targetFrames, parityPercent, dropPercent, adaptiveBitrate, remoteInput);
                 return;
             }
             catch (DesktopConfigurationChangedException ex)
@@ -75,7 +76,7 @@ internal static partial class Program
     }
 
     private static void RunLanHostSession(
-        ILogger logger, IUdpTransport socket, string peerDescription, int targetFrames, int parityPercent, int dropPercent, bool adaptiveBitrate)
+        ILogger logger, IUdpTransport socket, string peerDescription, int targetFrames, int parityPercent, int dropPercent, bool adaptiveBitrate, bool remoteInput)
     {
         logger.Info($"Phase 1 LAN host: capture -> native NVENC -> UDP {peerDescription}" +
                     $"{(parityPercent > 0 ? $", {parityPercent}% FEC parity" : "")}" +
@@ -119,6 +120,12 @@ internal static partial class Program
 
         var packetizer = new VideoPacketizer(parityRatio: parityPercent / 100.0);
         var dropRng = dropPercent > 0 ? new Random() : null;
+
+        // Injects the client's captured mouse/keyboard onto this machine's real desktop -- see
+        // docs/PHASE-3.md. Target bounds are the same display being captured/streamed (lesson #1:
+        // physical pixels, the same coordinate space the client normalized against).
+        var inputInjector = remoteInput ? new InputInjector() : null;
+        var inputEventsReceived = 0L;
         var run = Stopwatch.StartNew();
         TimeSpan? runLimit = targetFrames == 0
             ? null
@@ -206,6 +213,19 @@ internal static partial class Program
                         if (newBitrate != encoder.CurrentBitrateBps)
                             encoder.SetBitrate(newBitrate);
                     }
+                    else if (message.Kind == LanDatagramKind.Input && inputInjector is not null)
+                    {
+                        try
+                        {
+                            var inputEvent = InputEventCodec.Decode(message.Payload.Span);
+                            inputInjector.Inject(inputEvent, (int)selected.Left, (int)selected.Top, (int)selected.Width, (int)selected.Height);
+                            inputEventsReceived++;
+                        }
+                        catch (Exception ex) when (ex is ArgumentException or IndexOutOfRangeException)
+                        {
+                            logger.Warn($"Discarding malformed input event: {ex.Message}");
+                        }
+                    }
                 }
 
                 if (!duplicator.TryAcquireNextFrame(100, out var desktopFrame))
@@ -275,6 +295,7 @@ internal static partial class Program
         finally
         {
             Console.CancelKeyPress -= cancelHandler;
+            inputInjector?.ReleaseAllHeld(); // lesson #3 safety net: never leave a stuck button/modifier on session end.
         }
 
         logger.Info(
@@ -298,6 +319,10 @@ internal static partial class Program
         if (congestion is not null)
         {
             logger.Info($"[lan-host] adaptive bitrate ended at {encoder.CurrentBitrateBps / 1_000_000.0:0.##}Mbps.");
+        }
+        if (inputInjector is not null)
+        {
+            logger.Info($"[lan-host] input-events-received={inputEventsReceived}.");
         }
 
         if (targetFrames > 0 && encoded < targetFrames)
@@ -346,16 +371,16 @@ internal static partial class Program
         }
     }
 
-    private static void RunLanClient(ILogger logger, int listenPort, int targetFrames, bool verifyFrame)
+    private static void RunLanClient(ILogger logger, int listenPort, int targetFrames, bool verifyFrame, bool remoteInput)
     {
         logger.Info($"Phase 1 LAN client: listening for UDP video on 0.0.0.0:{listenPort}.");
         using IUdpTransport socket = new UdpTransport(LanReceiveBufferSize, sendBufferSize: 0);
         socket.Bind(new IPEndPoint(IPAddress.Any, listenPort));
         logger.Info($"LAN client bound to {socket.LocalEndPoint}; start the host with --lan-host <this-PC-ip>:{listenPort}.");
-        RunLanClientSession(logger, socket, targetFrames, verifyFrame);
+        RunLanClientSession(logger, socket, targetFrames, verifyFrame, remoteInput);
     }
 
-    private static void RunLanClientSession(ILogger logger, IUdpTransport socket, int targetFrames, bool verifyFrame)
+    private static void RunLanClientSession(ILogger logger, IUdpTransport socket, int targetFrames, bool verifyFrame, bool remoteInput)
     {
         using var mfDevice = MfDevice.Create(logger);
         var displays = DisplayEnumerator.Enumerate(mfDevice.Device);
@@ -376,6 +401,23 @@ internal static partial class Program
         var datagramsReceived = 0L;
         var malformedDatagrams = 0L;
         var ended = false;
+
+        // Captures real local mouse/keyboard on the presentation window and forwards each event to
+        // the host to inject -- see docs/PHASE-3.md. Opt-in: --remote-input on both ends.
+        using var inputCapture = remoteInput ? new RawInputCapture(window.Handle) : null;
+        var inputSendBuffer = new byte[InputEventCodec.MaxSize];
+        var inputEventsSent = 0L;
+        if (inputCapture is not null)
+        {
+            inputCapture.Captured += inputEvent =>
+            {
+                if (activeHost is null || session is null) return;
+                var length = InputEventCodec.Encode(inputEvent, inputSendBuffer);
+                socket.SendTo(LanDatagramCodec.WrapInput(session.SessionId, inputSendBuffer.AsSpan(0, length)), activeHost);
+                inputEventsSent++;
+            };
+            logger.Info("Remote input capture active -- real mouse/keyboard on the presentation window will be sent to the host.");
+        }
 
         // Windowed frame-loss feedback for RemoteControl.Net.Congestion.CongestionController
         // (docs/PHASE-4.md), sent back to the host ~1x/sec -- see "QualityReport" in LanDatagramCodec.
@@ -474,7 +516,8 @@ internal static partial class Program
                     $"[lan-client] datagrams={datagramsReceived}, completed={session.CompletedFrames}, " +
                     $"decoded={session.Decoded}, presented={session.Presented}, malformed={malformedDatagrams}, " +
                     $"incomplete={session.IncompleteFrames}, dropped-incomplete={session.DroppedIncompleteFrames}, " +
-                    $"skipped-for-reordering={session.SkippedForReordering}.");
+                    $"skipped-for-reordering={session.SkippedForReordering}" +
+                    $"{(inputCapture is not null ? $", input-events-sent={inputEventsSent}" : "")}.");
                 session.Dispose();
             }
         }

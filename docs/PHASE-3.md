@@ -3,9 +3,11 @@
 ## Status
 
 **Both halves implemented and real-hardware verified, including the
-lesson #3 safety net. Not done -- see "What's not verified yet" below
-before treating this phase as complete (none of the three explicit
-regression checks have been run).**
+lesson #3 safety net, and now wired together end to end over the network
+(real-hardware verified on loopback). Not done -- see "What's not verified
+yet" below before treating this phase as complete (none of the three
+explicit regression checks have been run, and reliability of the network
+channel itself is a known open question).**
 
 `RemoteControl.Input.InputInjector` replays `RemoteControl.Protocol.InputEvent`
 via `SendInput` (real Win32 P/Invoke, `Win32Native.cs`, no package). Bakes in
@@ -113,6 +115,39 @@ layout, default DPI:
   around window-activation. Didn't affect any of the above; not investigated
   further.
 
+## Real-hardware result: the end-to-end network loop
+
+`RawInputCapture` (client) -> `InputEventCodec` -> a new `LanDatagramKind.Input`
+datagram -> the existing LAN socket -> `InputEventCodec.Decode` -> `InputInjector`
+(host) is wired up in `tools/LoopbackHarness`, opt-in via `--remote-input` on
+both `--lan-client`/`--lan-host` (and the P2P equivalents). Reuses the same
+UDP socket and `LanDatagramCodec` envelope already carrying video --
+deliberately not ENet, matching the same "defer it until genuinely needed"
+call `docs/PHASE-1.md` gate item 4 made for the video channel. Best-effort
+UDP, same reliability as everything else on this socket -- see the open
+question about that below.
+
+Real-hardware loopback test (both host and client on this machine, so the
+*same* physical cursor is being driven by two things at once -- see the
+caveat below): moving the real mouse over the client's presentation window
+visibly moved this machine's real cursor via the injector, confirmed by the
+client's summary log: **`input-events-sent=59`** for one ~38s interactive
+session, all real captured events, zero errors. On loopback specifically
+the result looks like "teleporting" -- the cursor jumping around rather
+than tracking smoothly -- because the client window and the host's full
+captured display are different regions of the *same* physical screen with
+the *same* physical cursor, so the real hand-driven position and the
+injected recalculated absolute position fight each other. That's a
+loopback-testing artifact, not a bug: on two separate machines there are
+two separate physical cursors, so there's nothing to fight.
+
+A real two-machine attempt hit `input-events-received=0` on the host --
+turned out to be a process error, not a code bug: the client's build was
+several commits behind (this feature hadn't been pushed yet when it was
+tested), so `--remote-input` was silently unrecognized. Worth remembering
+for next time: push and confirm the pulled commit hash matches *before*
+asking the other machine to test a brand-new flag.
+
 ## What's not verified yet
 
 - **None of `docs/ARCHITECTURE.md`'s three explicit Phase 3 regression
@@ -122,13 +157,20 @@ layout, default DPI:
   typing English text with both an English and a non-English host keyboard
   layout -- only tested against an English layout so far; (c) fast drag
   overshoot + alt-tab mid-drag causing no stuck button on the host --
-  today's automated test proves the *focus-loss* half of this (see above)
-  but used a synthetic off-screen window to steal focus, not a real
+  the `--input-capture-demo` test proves the *focus-loss* half of this (see
+  above) but used a synthetic off-screen window to steal focus, not a real
   physical alt-tab keystroke or a real fast-overshoot drag past the window
   edge; worth a manual pass with real hardware input specifically.
-- **No real end-to-end loop yet**: `RawInputCapture` and `InputInjector`
-  are each proven to work correctly on their own machine, but nothing wires
-  capture -> `InputEventCodec` -> a network channel -> decode -> inject
-  together across two machines yet -- that integration, plus the actual
-  ENet reliable/unreliable input channels from `docs/WIRE-PROTOCOL.md`,
-  remains.
+- **The end-to-end loop hasn't been proven on a real two-machine network
+  yet** -- only loopback so far (see above); the one real attempt failed
+  for a process reason (stale client build) before it could test anything.
+- **Reliability is a real open question, not yet tested.** The `Input`
+  datagram rides the same best-effort UDP as video -- a lost `MouseUp` or
+  `KeyUp` specifically (as opposed to a lost `MouseMove`, which the next
+  move corrects for free) could leave the host with a stuck virtual button
+  or held modifier that `InputInjector.ReleaseAllHeld()` only clears on
+  session end, not on one lost packet mid-session. Nothing has deliberately
+  dropped an up/down event yet (e.g. via `tools/LossyProxy`) to see whether
+  this is a real practical problem or a theoretical one -- that's the
+  natural next test before deciding whether it needs a reliability layer
+  (an app-level ACK/resync, or finally bringing in ENet's reliable channel).

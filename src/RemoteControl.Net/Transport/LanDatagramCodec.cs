@@ -11,6 +11,7 @@ public enum LanDatagramKind : byte
     LatencyProbe = 5,
     LatencyEcho = 6,
     QualityReport = 7,
+    Input = 8,
 }
 
 public readonly record struct LanDatagram(
@@ -140,6 +141,28 @@ public static class LanDatagramCodec
     public static float ReadQualityReport(ReadOnlySpan<byte> payload) =>
         BinaryPrimitives.ReadSingleLittleEndian(payload[..4]);
 
+    /// <summary>
+    /// Sent by the client, one per captured mouse/keyboard event -- see
+    /// RemoteControl.Input.RawInputCapture. Payload is a single
+    /// RemoteControl.Protocol.InputEventCodec-encoded event, opaque to this
+    /// envelope (same relationship as <see cref="WrapVideo"/> to a video
+    /// shard). Best-effort UDP, same as video and everything else on this
+    /// socket -- see docs/PHASE-3.md for the known risk that implies for a
+    /// lost MouseUp/KeyUp specifically.
+    /// </summary>
+    public static byte[] WrapInput(ulong sessionId, ReadOnlySpan<byte> encodedInputEvent)
+    {
+        if (encodedInputEvent.IsEmpty)
+            throw new ArgumentException("Encoded input event must not be empty.", nameof(encodedInputEvent));
+
+        var datagram = CreateHeader(
+            LanDatagramKind.Input,
+            sessionId,
+            checked(CommonHeaderSize + encodedInputEvent.Length));
+        encodedInputEvent.CopyTo(datagram.AsSpan(CommonHeaderSize));
+        return datagram;
+    }
+
     public static bool TryRead(ReadOnlySpan<byte> source, out LanDatagram datagram)
     {
         datagram = default;
@@ -187,6 +210,7 @@ public static class LanDatagramCodec
             case LanDatagramKind.LatencyProbe when source.Length == LatencyProbeSize:
             case LanDatagramKind.LatencyEcho when source.Length == LatencyEchoSize:
             case LanDatagramKind.QualityReport when source.Length == QualityReportSize:
+            case LanDatagramKind.Input when source.Length > CommonHeaderSize:
                 datagram = new LanDatagram(
                     kind,
                     sessionId,

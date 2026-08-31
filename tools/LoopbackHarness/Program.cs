@@ -68,7 +68,8 @@ internal static partial class Program
                     ReadFrameTarget(args),
                     ReadPercentOption(args, "--parity-percent", defaultValue: 0),
                     ReadPercentOption(args, "--drop-percent", defaultValue: 0),
-                    args.Contains("--adaptive-bitrate"));
+                    args.Contains("--adaptive-bitrate"),
+                    args.Contains("--remote-input"));
             }
             else if (lanClientPort is not null)
             {
@@ -76,7 +77,8 @@ internal static partial class Program
                     logger,
                     ParseListenPort(lanClientPort),
                     ReadFrameTarget(args),
-                    verifyFrame: !args.Contains("--no-verify-frame"));
+                    verifyFrame: !args.Contains("--no-verify-frame"),
+                    remoteInput: args.Contains("--remote-input"));
             }
             else if (p2pHostPort is not null)
             {
@@ -88,7 +90,8 @@ internal static partial class Program
                     ReadFrameTarget(args),
                     ReadPercentOption(args, "--parity-percent", defaultValue: 0),
                     ReadPercentOption(args, "--drop-percent", defaultValue: 0),
-                    args.Contains("--adaptive-bitrate"));
+                    args.Contains("--adaptive-bitrate"),
+                    args.Contains("--remote-input"));
             }
             else if (p2pClientPort is not null)
             {
@@ -98,7 +101,8 @@ internal static partial class Program
                     ParseStunServer(ReadOption(args, "--stun-server") ?? "stun.l.google.com:19302"),
                     ReadRemoteCandidate(args),
                     ReadFrameTarget(args),
-                    verifyFrame: !args.Contains("--no-verify-frame"));
+                    verifyFrame: !args.Contains("--no-verify-frame"),
+                    remoteInput: args.Contains("--remote-input"));
             }
             else if (inputDemo)
             {

@@ -78,6 +78,20 @@ public class LanDatagramCodecTests
         Assert.Equal(0.125f, LanDatagramCodec.ReadQualityReport(datagram.Payload.Span));
     }
 
+    [Fact]
+    public void Input_RoundTripsWithoutAliasingInput()
+    {
+        var payload = new byte[] { 1, 2, 3, 4 };
+        var bytes = LanDatagramCodec.WrapInput(9, payload);
+
+        Assert.True(LanDatagramCodec.TryRead(bytes, out var datagram));
+        bytes[^1] = 99;
+
+        Assert.Equal(LanDatagramKind.Input, datagram.Kind);
+        Assert.Equal(9UL, datagram.SessionId);
+        Assert.Equal(new byte[] { 1, 2, 3, 4 }, datagram.Payload.ToArray());
+    }
+
     [Theory]
     [InlineData(new byte[0])]
     [InlineData(new byte[] { 0x52, 0x43, 0x4E, 0x31 })]
