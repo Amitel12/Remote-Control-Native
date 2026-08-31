@@ -4,6 +4,11 @@
 
 **Core milestone CONFIRMED on real hardware: two machines on genuinely
 different networks connected directly (no relay) and streamed real video.**
+A second, separate real test on a different network hit a genuinely
+restrictive NAT where hole-punching failed outright (see "Real
+restrictive-NAT failure" below) -- direct P2P is confirmed to work but is
+**not sufficient on its own**; TURN relay fallback is a real requirement,
+not a nice-to-have, for this feature to work on every network.
 
 `StunClient` (Phase 0/1) and `RemoteControl.Net.Stun.HolePunchCoordinator`
 (new) implement simultaneous-open UDP hole punching, the same approach
@@ -83,6 +88,51 @@ lessons about manual candidate exchange specifically, not about the punch
 mechanism itself -- a real signaling server exchanging exact JSON payloads
 would not have either failure mode.
 
+## Real restrictive-NAT failure (confirms the risk flagged above)
+
+Host: same RTX 3070 PC, home network (public IP `176.229.223.217`, stable
+across the whole session). Client: a Windows laptop on a residential network
+at a relative's house (public IP `5.29.18.5`), unrelated to and untested
+before this session.
+
+- STUN discovery succeeded on both sides every time -- the client's
+  server-reflexive **port varied between process restarts** (`36097` ->
+  `36099` -> `36107` -> `36099` across five restarts) even though its local
+  ephemeral port also changed each time, consistent with a NAT that
+  allocates a fresh external port per new local socket rather than reusing
+  one.
+- Six punch attempts total. The first five failed for mundane process
+  reasons matching the exact lessons already written up above -- stale
+  candidates pasted after a restart, a transcription mismatch between what
+  was said and what was typed into the actual `dotnet run` command, and (twice)
+  one side's 30s punch window fully elapsing before the other side had even
+  finished building/starting, because `dotnet run`'s build+startup time ate
+  most or all of the window. None of these are new findings; they're the
+  same "manual exchange is fragile" class already documented, just worse
+  here because `dotnet run` (not a prebuilt binary) adds ~30-60s of variable
+  startup latency on the slower machine.
+- **The sixth attempt was clean**: both sides had byte-for-byte matching
+  candidates (confirmed by pasting exact terminal output rather than
+  recalling it), and the client began punching only 5 seconds into the
+  host's 30s window, giving ~25s of real overlap. **It still timed out.**
+- This is a genuine restrictive-NAT (or firewall) result, not a process
+  error: simultaneous-open punching depends on each side's NAT accepting an
+  inbound packet from a peer it has itself just sent an outbound packet to,
+  even though that specific peer never received a prior packet on its own.
+  Some NATs/firewalls (commonly ones with per-session or per-destination
+  port allocation, or strict stateful firewalls) refuse this regardless of
+  timing. The varying external port per restart above is consistent with,
+  though not conclusive proof of, that kind of allocation.
+- Not IPv6-related: both server-reflexive candidates involved (`5.29.18.5`,
+  `176.229.223.217`) are plain IPv4; STUN never returned an IPv6 candidate
+  on either side.
+- **This is exactly the gap already flagged**: "TURN relay fallback is not
+  implemented" below, and the "mobile hotspot" restrictive-network risk in
+  `docs/ARCHITECTURE.md`'s Phase 2 milestone. The phone-hotspot test above
+  got lucky (non-symmetric NAT); this network is the real case TURN exists
+  for. Direct P2P alone cannot be assumed sufficient for Phase 2 -- a relay
+  fallback is required for production use, not just a nice-to-have.
+
 ## What's still manual / open
 
 - **No deployed signaling server yet** to exchange `stun-candidates`
@@ -91,10 +141,11 @@ would not have either failure mode.
   end to end with `HolePunchCoordinator` yet. That wiring, plus the
   `register` -> `peer-joined` -> `stun-candidates` -> `hole-punch-ready`
   flow from `docs/WIRE-PROTOCOL.md`, is the next real piece of Phase 2 work.
-- **TURN relay fallback is not implemented.** This test's NAT happened not
-  to be symmetric; a genuinely restrictive network (the "mobile hotspot"
-  case in `docs/ARCHITECTURE.md`'s Phase 2 milestone) would need the coturn
-  relay path, which nothing here exercises yet.
+- **TURN relay fallback is not implemented.** The original test's NAT
+  happened not to be symmetric; the restrictive-NAT test above (see "Real
+  restrictive-NAT failure") confirms this is not a hypothetical risk -- a
+  real network was hit where direct hole-punching genuinely cannot succeed,
+  and the coturn relay path is the only fix. Nothing here exercises it yet.
 - **`CandidateKind.Host`/`Relay` are unused by `HolePunchCoordinator`** --
   only the STUN-discovered server-reflexive candidate was tried. Host
   candidates (useful when both peers happen to share a LAN) and relay
