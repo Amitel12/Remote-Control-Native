@@ -184,6 +184,35 @@ public class VideoPacketizerRoundTripTests
         Assert.Equal(1, depacketizer.InProgressFrameCount);
     }
 
+    [Fact]
+    public void LateShardForAlreadyEvictedFrame_IsDiscarded_NotReopened()
+    {
+        // A shard that only arrived *late* (not lost -- e.g. reordered behind
+        // a burst of later frames) for a frame already evicted as incomplete
+        // must not resurrect it: that would double-count the frame (evicted
+        // *and* later "completed") and, worse, could decode/present a stale
+        // frame after newer ones already displayed. See VideoDepacketizer's
+        // _lastResolvedFrameIndex remarks.
+        var packetizer = new VideoPacketizer(shardPayloadSize: 1200, parityRatio: 0);
+        var depacketizer = new VideoDepacketizer();
+        var oldPackets = packetizer.Packetize(0, MakeFrame(2000, seed: 50));
+        var newerPackets = packetizer.Packetize(9, MakeFrame(2000, seed: 51));
+
+        depacketizer.AddPacket(oldPackets[0]); // Frame 0 stays incomplete (needs all 2 shards).
+        depacketizer.AddPacket(newerPackets[0]); // Evicts frame 0 (9 - 8 retention window = 1).
+        Assert.Equal(1, depacketizer.DroppedIncompleteFrameCount);
+
+        // The rest of frame 0's shards trickle in late -- if they reopened a
+        // new assembly, this would return the reassembled frame 0 bytes.
+        byte[]? result = null;
+        foreach (var packet in oldPackets.Skip(1))
+            result ??= depacketizer.AddPacket(packet);
+
+        Assert.Null(result);
+        Assert.Equal(1, depacketizer.DroppedIncompleteFrameCount); // Not double-counted.
+        Assert.Equal(1, depacketizer.InProgressFrameCount); // Only frame 9's assembly, not a reopened frame 0.
+    }
+
     private static byte[] MakeFrame(int length, int seed)
     {
         var frame = new byte[length];

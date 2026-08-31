@@ -20,6 +20,17 @@ public sealed class VideoDepacketizer
     private readonly Dictionary<uint, FrameAssembly> _inProgress = new();
     private uint? _newestFrameIndex;
 
+    // Highest frame index that will never be accepted again, whether it
+    // completed or was evicted incomplete. Without this, a shard that only
+    // arrived *late* (not actually lost -- e.g. reordered behind a burst of
+    // later frames) for an already-evicted frame would silently reopen a
+    // brand-new FrameAssembly for that index. Confirmed happening under real
+    // loss + reordering (see docs/PHASE-1.md's FEC recovery test): it
+    // double-counted the frame in both DroppedIncompleteFrameCount and a
+    // later completion, and worse, a frame reopened this way can complete
+    // and get decoded/presented *after* newer frames already displayed.
+    private uint? _lastResolvedFrameIndex;
+
     public int DroppedIncompleteFrameCount { get; private set; }
 
     /// <summary>
@@ -39,6 +50,16 @@ public sealed class VideoDepacketizer
             _newestFrameIndex = header.FrameIndex;
             if (header.FrameIndex > FrameRetentionWindow)
                 EvictFramesOlderThan(header.FrameIndex - FrameRetentionWindow);
+        }
+
+        // A shard for a frame that's already resolved (completed or evicted)
+        // arrived late -- discard it rather than reopening a new assembly
+        // from scratch. See _lastResolvedFrameIndex's remarks.
+        if (_lastResolvedFrameIndex is not null &&
+            header.FrameIndex <= _lastResolvedFrameIndex.Value &&
+            !_inProgress.ContainsKey(header.FrameIndex))
+        {
+            return null;
         }
 
         if (!_inProgress.TryGetValue(header.FrameIndex, out var assembly))
@@ -64,6 +85,8 @@ public sealed class VideoDepacketizer
 
         var frameBytes = assembly.Reassemble();
         _inProgress.Remove(header.FrameIndex);
+        if (_lastResolvedFrameIndex is null || header.FrameIndex > _lastResolvedFrameIndex.Value)
+            _lastResolvedFrameIndex = header.FrameIndex;
         return frameBytes;
     }
 
@@ -75,6 +98,12 @@ public sealed class VideoDepacketizer
             _inProgress.Remove(key);
             DroppedIncompleteFrameCount++;
         }
+
+        // Everything below this threshold is now permanently resolved (either
+        // already completed, or given up on here), even indices that never
+        // had an in-progress entry at all -- see _lastResolvedFrameIndex's remarks.
+        if (frameIndex > 0 && (_lastResolvedFrameIndex is null || frameIndex - 1 > _lastResolvedFrameIndex.Value))
+            _lastResolvedFrameIndex = frameIndex - 1;
     }
 
     public int InProgressFrameCount => _inProgress.Count;

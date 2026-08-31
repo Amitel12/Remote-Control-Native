@@ -56,7 +56,12 @@ internal static partial class Program
         {
             if (lanHostTarget is not null)
             {
-                RunLanHost(logger, ParseRemoteEndpoint(lanHostTarget), ReadFrameTarget(args));
+                RunLanHost(
+                    logger,
+                    ParseRemoteEndpoint(lanHostTarget),
+                    ReadFrameTarget(args),
+                    ReadPercentOption(args, "--parity-percent", defaultValue: 0),
+                    ReadPercentOption(args, "--drop-percent", defaultValue: 0));
             }
             else if (lanClientPort is not null)
             {
@@ -109,6 +114,22 @@ internal static partial class Program
         }
 
         return frameTarget;
+    }
+
+    private static int ReadPercentOption(string[] args, string option, int defaultValue)
+    {
+        var optionIndex = Array.IndexOf(args, option);
+        if (optionIndex < 0)
+            return defaultValue;
+
+        if (optionIndex + 1 >= args.Length ||
+            !int.TryParse(args[optionIndex + 1], out var value) ||
+            value is < 0 or > 100)
+        {
+            throw new ArgumentException($"{option} requires an integer from 0 through 100.");
+        }
+
+        return value;
     }
 
     private static void RunStep2(

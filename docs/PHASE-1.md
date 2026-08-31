@@ -14,8 +14,9 @@
 The first slice uses a direct UDP socket so the capture/encode process and the
 decode/present process are genuinely separated before adding NAT traversal or
 control channels. The planned `EnetTransport` abstraction is not implemented
-yet. Video uses the existing `VideoPacketizer`/`VideoDepacketizer` with parity
-disabled for the initial low-loss LAN baseline.
+yet. Video uses the existing `VideoPacketizer`/`VideoDepacketizer`, with parity
+off by default (`--parity-percent 0`) for the low-loss LAN baseline above --
+see "FEC parity recovery" below for turning it on and what it actually buys.
 
 ## Running the localhost test
 
@@ -50,6 +51,71 @@ window is intentionally black until configuration arrives. Close the client
 window or press Ctrl+C in the host terminal to cancel before connection.
 Each display-mode rebuild receives a new random session ID, allowing the client
 to discard stale datagrams and recreate its video session at the new size.
+
+## FEC parity recovery
+
+`VideoPacketizer`/`VideoDepacketizer` already fully implement Reed-Solomon
+parity shards and reconstruction (`RemoteControl.Net.Fec.ReedSolomonCodec`,
+16 unit tests including exhaustive K-of-N reconstruction) -- that work
+predates Phase 1. What Phase 1 hadn't done until now is turn it on anywhere
+the real LAN host runs, or verify it actually recovers real loss over the
+real runtime socket path rather than just in an isolated unit test.
+
+Two new host-only flags:
+
+- `--parity-percent N` (0-100, default 0): sets `VideoPacketizer`'s
+  `parityRatio`. `N`% of a frame's data-shard count is added as recoverable
+  parity shards (e.g. 10 data shards + 25% parity = 3 parity shards; any 10
+  of the resulting 13 are enough to reconstruct the frame).
+- `--drop-percent N` (0-100, default 0): **diagnostic only, not a real
+  network's loss.** Before sending each video shard, the host rolls the dice
+  and silently skips sending it N% of the time. This is the only way to
+  prove FEC recovery works over the real socket path without a second,
+  genuinely lossy network -- it exists to exercise the pipeline, not to
+  model real Wi-Fi loss statistics (real loss is bursty and correlated,
+  this is independent per-shard).
+
+**Real localhost A/B result** (RTX 3070, 1920x1080@60, 300 frames, 15%
+simulated per-shard loss both runs):
+
+| | `--parity-percent 0` (control) | `--parity-percent 25` |
+|---|---|---|
+| completed | 162 | 266 |
+| decoded | **0** | **266** |
+| presented | **0 / 300** | **266 / 300** |
+| dropped-incomplete | 129 | 33 |
+| incomplete (still in flight at end) | 4 | 1 |
+
+(Exact completed/dropped/incomplete counts vary run to run -- 15% is a random
+per-shard roll, so which specific shards are lost differs each time. The
+decisive, stable result across every run tried is `decoded`/`presented`:
+always 0 without parity, reliably in the 260s/300 with it.)
+
+Without parity, 15% independent per-shard loss didn't just drop a few
+frames -- it wedged the entire stream at 0 decoded/presented. The likely
+cause: NVENC's initial IDR (keyframe) is one large frame spread across many
+shards, so it has the highest chance of losing at least one shard to
+independent per-shard loss, and this harness sends exactly one keyframe at
+stream start (no periodic re-keyframing yet) -- lose that one frame
+irrecoverably and every subsequent P-frame has nothing to decode against.
+With 25% parity, the same loss recovers to 266/300 presented (88.7%).
+
+The first pass at this table had a real bug, not just a confusing number:
+`completed` + `dropped-incomplete` summed to more than 300 frames sent, and
+`decoded` was consistently lower than `completed`. Cause:
+`VideoDepacketizer` tracked eviction only by the newest frame index seen, not
+which indices were permanently resolved -- a shard that merely arrived
+*late* (reordered behind a burst of newer frames, not actually lost) for an
+already-evicted frame silently reopened a brand-new `FrameAssembly` for that
+same index. That's not just a bookkeeping quirk: if that reopened frame then
+completed, it got decoded and presented *after* newer frames had already
+displayed -- a real stale-frame-out-of-order bug, not only a stats mismatch.
+Fixed by tracking a `_lastResolvedFrameIndex` watermark and discarding any
+shard at or below it for a frame no longer in progress (see
+`VideoDepacketizer.cs` and the `LateShardForAlreadyEvictedFrame_IsDiscarded_NotReopened`
+regression test). The table above is the corrected, self-consistent result --
+`completed` now exactly equals `decoded`, and `completed + dropped-incomplete
++ incomplete` sums to 300 on both runs.
 
 ## Real-hardware localhost result
 
@@ -104,10 +170,12 @@ make it worth the precision.
 ## Remaining Phase 1 gate
 
 1. Run the same roles on two Windows PCs connected to the same router.
-2. Record packet/frame counters on wired Ethernet, then Wi-Fi, and read the
-   new `[lan-host] latency rtt/clock-offset` line for the first real
+2. Record packet/frame counters on wired Ethernet, then Wi-Fi: read the new
+   `[lan-host] latency rtt/clock-offset` line for the first real
    cross-machine numbers (see "Latency instrumentation" above for its actual
-   precision floor before trusting the number).
+   precision floor before trusting the number), and try `--parity-percent`
+   against whatever real loss shows up there (see "FEC parity recovery"
+   above for what it fixed against simulated loss).
 3. ~~Add latency timestamps/echo clock-offset estimation~~ **Done** -- see
    "Latency instrumentation" above. The mechanism round-trips correctly on the
    localhost test; the real LAN glass-to-glass number is still item 1's gate,
