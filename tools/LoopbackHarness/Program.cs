@@ -78,7 +78,8 @@ internal static partial class Program
                     ParseListenPort(lanClientPort),
                     ReadFrameTarget(args),
                     verifyFrame: !args.Contains("--no-verify-frame"),
-                    remoteInput: args.Contains("--remote-input"));
+                    remoteInput: args.Contains("--remote-input"),
+                    ReadPercentOption(args, "--drop-input-percent", defaultValue: 0));
             }
             else if (p2pHostPort is not null)
             {
@@ -102,7 +103,8 @@ internal static partial class Program
                     ReadRemoteCandidate(args),
                     ReadFrameTarget(args),
                     verifyFrame: !args.Contains("--no-verify-frame"),
-                    remoteInput: args.Contains("--remote-input"));
+                    remoteInput: args.Contains("--remote-input"),
+                    ReadPercentOption(args, "--drop-input-percent", defaultValue: 0));
             }
             else if (inputDemo)
             {

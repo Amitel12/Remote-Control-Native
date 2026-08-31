@@ -371,16 +371,16 @@ internal static partial class Program
         }
     }
 
-    private static void RunLanClient(ILogger logger, int listenPort, int targetFrames, bool verifyFrame, bool remoteInput)
+    private static void RunLanClient(ILogger logger, int listenPort, int targetFrames, bool verifyFrame, bool remoteInput, int dropInputPercent)
     {
         logger.Info($"Phase 1 LAN client: listening for UDP video on 0.0.0.0:{listenPort}.");
         using IUdpTransport socket = new UdpTransport(LanReceiveBufferSize, sendBufferSize: 0);
         socket.Bind(new IPEndPoint(IPAddress.Any, listenPort));
         logger.Info($"LAN client bound to {socket.LocalEndPoint}; start the host with --lan-host <this-PC-ip>:{listenPort}.");
-        RunLanClientSession(logger, socket, targetFrames, verifyFrame, remoteInput);
+        RunLanClientSession(logger, socket, targetFrames, verifyFrame, remoteInput, dropInputPercent);
     }
 
-    private static void RunLanClientSession(ILogger logger, IUdpTransport socket, int targetFrames, bool verifyFrame, bool remoteInput)
+    private static void RunLanClientSession(ILogger logger, IUdpTransport socket, int targetFrames, bool verifyFrame, bool remoteInput, int dropInputPercent = 0)
     {
         using var mfDevice = MfDevice.Create(logger);
         var displays = DisplayEnumerator.Enumerate(mfDevice.Device);
@@ -407,16 +407,27 @@ internal static partial class Program
         using var inputCapture = remoteInput ? new RawInputCapture(window.Handle) : null;
         var inputSendBuffer = new byte[InputEventCodec.MaxSize];
         var inputEventsSent = 0L;
+        var inputEventsDroppedSimulated = 0L;
+        var inputDropRng = dropInputPercent > 0 ? new Random() : null;
         if (inputCapture is not null)
         {
             inputCapture.Captured += inputEvent =>
             {
                 if (activeHost is null || session is null) return;
+                // Diagnostic-only, for proving out reliability (docs/PHASE-3.md) -- not a real
+                // network's loss, deliberately deterministic-rate so a lost MouseUp/KeyUp specifically
+                // can be reproduced on demand instead of hoping for it under generic packet loss.
+                if (inputDropRng is not null && inputDropRng.Next(100) < dropInputPercent)
+                {
+                    inputEventsDroppedSimulated++;
+                    return;
+                }
                 var length = InputEventCodec.Encode(inputEvent, inputSendBuffer);
                 socket.SendTo(LanDatagramCodec.WrapInput(session.SessionId, inputSendBuffer.AsSpan(0, length)), activeHost);
                 inputEventsSent++;
             };
-            logger.Info("Remote input capture active -- real mouse/keyboard on the presentation window will be sent to the host.");
+            logger.Info("Remote input capture active -- real mouse/keyboard on the presentation window will be sent to the host." +
+                        (dropInputPercent > 0 ? $" Simulating {dropInputPercent}% dropped input events (diagnostic only)." : ""));
         }
 
         // Windowed frame-loss feedback for RemoteControl.Net.Congestion.CongestionController
@@ -517,7 +528,8 @@ internal static partial class Program
                     $"decoded={session.Decoded}, presented={session.Presented}, malformed={malformedDatagrams}, " +
                     $"incomplete={session.IncompleteFrames}, dropped-incomplete={session.DroppedIncompleteFrames}, " +
                     $"skipped-for-reordering={session.SkippedForReordering}" +
-                    $"{(inputCapture is not null ? $", input-events-sent={inputEventsSent}" : "")}.");
+                    $"{(inputCapture is not null ? $", input-events-sent={inputEventsSent}" : "")}" +
+                    $"{(dropInputPercent > 0 ? $", input-events-dropped-simulated={inputEventsDroppedSimulated}" : "")}.");
                 session.Dispose();
             }
         }

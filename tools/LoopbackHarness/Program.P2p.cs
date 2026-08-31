@@ -53,7 +53,7 @@ internal static partial class Program
     }
 
     private static void RunP2pClient(
-        ILogger logger, int localPort, IPEndPoint stunServer, IPEndPoint? remoteCandidate, int targetFrames, bool verifyFrame, bool remoteInput)
+        ILogger logger, int localPort, IPEndPoint stunServer, IPEndPoint? remoteCandidate, int targetFrames, bool verifyFrame, bool remoteInput, int dropInputPercent)
     {
         using var rawSocket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp)
         {
@@ -64,7 +64,7 @@ internal static partial class Program
         DiscoverAndPunchAsync(logger, rawSocket, stunServer, remoteCandidate).GetAwaiter().GetResult();
         IUdpTransport socket = new UdpTransport(rawSocket);
         logger.Info("Peer reachable -- entering the normal LAN client session (video streaming is identical either way).");
-        RunLanClientSession(logger, socket, targetFrames, verifyFrame, remoteInput);
+        RunLanClientSession(logger, socket, targetFrames, verifyFrame, remoteInput, dropInputPercent);
     }
 
     /// <summary>
