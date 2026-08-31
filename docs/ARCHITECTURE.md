@@ -311,9 +311,9 @@ Ordered so the two highest-risk unknowns surface first, not last.
    yet -- only the loss-driven half of "adaptive bitrate" is proven.
    **Milestone**:
    watchable stream under injected 1-5% loss and constrained bandwidth,
-   measured against the Phase 1 baseline -- loss/reordering half met on
-   loopback; bandwidth-constrained half not attempted; not yet run on a
-   real two-machine network.
+   measured against the Phase 1 baseline -- loss/reordering half met, on
+   both loopback and a real two-machine network; bandwidth-constrained half
+   not attempted.
 6. **Phase 5 -- Feature parity pass.** Multi-monitor swap; input
    arbitration (C# low-level hooks *do* reliably expose
    `LLMHF_INJECTED`/`LLKHF_INJECTED`, a real improvement over the
