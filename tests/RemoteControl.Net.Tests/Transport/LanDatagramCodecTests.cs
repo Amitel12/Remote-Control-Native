@@ -67,6 +67,17 @@ public class LanDatagramCodecTests
         Assert.Equal(111222333L, clientWallTicks);
     }
 
+    [Fact]
+    public void QualityReport_RoundTrips()
+    {
+        var bytes = LanDatagramCodec.CreateQualityReport(42, frameLossRate: 0.125f);
+
+        Assert.True(LanDatagramCodec.TryRead(bytes, out var datagram));
+        Assert.Equal(LanDatagramKind.QualityReport, datagram.Kind);
+        Assert.Equal(42UL, datagram.SessionId);
+        Assert.Equal(0.125f, LanDatagramCodec.ReadQualityReport(datagram.Payload.Span));
+    }
+
     [Theory]
     [InlineData(new byte[0])]
     [InlineData(new byte[] { 0x52, 0x43, 0x4E, 0x31 })]
@@ -75,6 +86,8 @@ public class LanDatagramCodecTests
     [InlineData(new byte[] { 0x52, 0x43, 0x4E, 0x31, 5, 0, 0, 0, 0, 0, 0, 0, 0 })]
     // LatencyEcho (kind 6) header with only a probe-sized payload -- too short for LatencyEchoSize.
     [InlineData(new byte[] { 0x52, 0x43, 0x4E, 0x31, 6, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 1, 2, 3, 4, 5, 6, 7, 8 })]
+    // QualityReport (kind 7) header with no payload -- too short for QualityReportSize.
+    [InlineData(new byte[] { 0x52, 0x43, 0x4E, 0x31, 7, 0, 0, 0, 0, 0, 0, 0, 0 })]
     public void InvalidDatagrams_AreRejected(byte[] bytes)
     {
         Assert.False(LanDatagramCodec.TryRead(bytes, out _));

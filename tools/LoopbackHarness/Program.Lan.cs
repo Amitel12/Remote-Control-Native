@@ -7,6 +7,7 @@ using System.Security.Cryptography;
 using RemoteControl.Capture;
 using RemoteControl.Codec;
 using RemoteControl.Common;
+using RemoteControl.Net.Congestion;
 using RemoteControl.Net.Transport;
 using RemoteControl.Net.Video;
 using RemoteControl.Protocol;
@@ -43,11 +44,11 @@ internal static partial class Program
         return port;
     }
 
-    private static void RunLanHost(ILogger logger, IPEndPoint clientEndpoint, int targetFrames, int parityPercent, int dropPercent)
+    private static void RunLanHost(ILogger logger, IPEndPoint clientEndpoint, int targetFrames, int parityPercent, int dropPercent, bool adaptiveBitrate)
     {
         using IUdpTransport socket = new UdpTransport(LanReceiveBufferSize, LanReceiveBufferSize);
         socket.Connect(clientEndpoint);
-        RunLanHostWithTransport(logger, socket, clientEndpoint.ToString(), targetFrames, parityPercent, dropPercent);
+        RunLanHostWithTransport(logger, socket, clientEndpoint.ToString(), targetFrames, parityPercent, dropPercent, adaptiveBitrate);
     }
 
     /// <summary>
@@ -57,13 +58,13 @@ internal static partial class Program
     /// NAT mapping and need a fresh hole-punch.
     /// </summary>
     private static void RunLanHostWithTransport(
-        ILogger logger, IUdpTransport socket, string peerDescription, int targetFrames, int parityPercent, int dropPercent)
+        ILogger logger, IUdpTransport socket, string peerDescription, int targetFrames, int parityPercent, int dropPercent, bool adaptiveBitrate)
     {
         while (true)
         {
             try
             {
-                RunLanHostSession(logger, socket, peerDescription, targetFrames, parityPercent, dropPercent);
+                RunLanHostSession(logger, socket, peerDescription, targetFrames, parityPercent, dropPercent, adaptiveBitrate);
                 return;
             }
             catch (DesktopConfigurationChangedException ex)
@@ -74,11 +75,12 @@ internal static partial class Program
     }
 
     private static void RunLanHostSession(
-        ILogger logger, IUdpTransport socket, string peerDescription, int targetFrames, int parityPercent, int dropPercent)
+        ILogger logger, IUdpTransport socket, string peerDescription, int targetFrames, int parityPercent, int dropPercent, bool adaptiveBitrate)
     {
         logger.Info($"Phase 1 LAN host: capture -> native NVENC -> UDP {peerDescription}" +
                     $"{(parityPercent > 0 ? $", {parityPercent}% FEC parity" : "")}" +
-                    $"{(dropPercent > 0 ? $", simulating {dropPercent}% video-shard loss (diagnostic only)" : "")}.");
+                    $"{(dropPercent > 0 ? $", simulating {dropPercent}% video-shard loss (diagnostic only)" : "")}" +
+                    $"{(adaptiveBitrate ? ", adaptive bitrate enabled" : "")}.");
 
         using var mfDevice = MfDevice.Create(logger);
         var displays = DisplayEnumerator.Enumerate(mfDevice.Device);
@@ -151,6 +153,14 @@ internal static partial class Program
         var latencyRttMs = new List<double>();
         var latencyOffsetMs = new List<double>();
 
+        // Adaptive bitrate (docs/PHASE-4.md): reacts to the client's QualityReport (frame loss)
+        // and the same RTT samples the latency probe above already measures. Bounded to never
+        // exceed the encoder's own starting bitrate -- only ever backs off and recovers, never
+        // pushes past the configured target quality.
+        var congestion = adaptiveBitrate
+            ? new CongestionController(startingBitrateBps: encoder.CurrentBitrateBps, minBitrateBps: 1_000_000, maxBitrateBps: encoder.CurrentBitrateBps)
+            : null;
+
         try
         {
             while (!stopRequested &&
@@ -166,20 +176,36 @@ internal static partial class Program
                 while (socket.Available > 0)
                 {
                     var received = socket.Receive(latencyBuffer);
-                    if (!LanDatagramCodec.TryRead(latencyBuffer.AsSpan(0, received), out var echo) ||
-                        echo.Kind != LanDatagramKind.LatencyEcho ||
-                        echo.SessionId != sessionId)
+                    if (!LanDatagramCodec.TryRead(latencyBuffer.AsSpan(0, received), out var message) ||
+                        message.SessionId != sessionId)
                     {
                         continue;
                     }
 
-                    var (probePerfTicks, probeWallTicks, clientWallTicks) = LanDatagramCodec.ReadLatencyEcho(echo.Payload.Span);
-                    var nowPerfTicks = Stopwatch.GetTimestamp();
-                    var rttMs = (nowPerfTicks - probePerfTicks) * 1000.0 / Stopwatch.Frequency;
-                    var rttTicks = (nowPerfTicks - probePerfTicks) * TimeSpan.TicksPerSecond / Stopwatch.Frequency;
-                    latencyRttMs.Add(rttMs);
-                    // Standard symmetric-latency estimate: offset = clientClock - hostClock - RTT/2.
-                    latencyOffsetMs.Add((clientWallTicks - probeWallTicks - rttTicks / 2.0) / TimeSpan.TicksPerMillisecond);
+                    if (message.Kind == LanDatagramKind.LatencyEcho)
+                    {
+                        var (probePerfTicks, probeWallTicks, clientWallTicks) = LanDatagramCodec.ReadLatencyEcho(message.Payload.Span);
+                        var nowPerfTicks = Stopwatch.GetTimestamp();
+                        var rttMs = (nowPerfTicks - probePerfTicks) * 1000.0 / Stopwatch.Frequency;
+                        var rttTicks = (nowPerfTicks - probePerfTicks) * TimeSpan.TicksPerSecond / Stopwatch.Frequency;
+                        latencyRttMs.Add(rttMs);
+                        // Standard symmetric-latency estimate: offset = clientClock - hostClock - RTT/2.
+                        latencyOffsetMs.Add((clientWallTicks - probeWallTicks - rttTicks / 2.0) / TimeSpan.TicksPerMillisecond);
+
+                        if (congestion is not null)
+                        {
+                            var newBitrate = congestion.OnSample(frameLossRate: null, rttMs: rttMs);
+                            if (newBitrate != encoder.CurrentBitrateBps)
+                                encoder.SetBitrate(newBitrate);
+                        }
+                    }
+                    else if (message.Kind == LanDatagramKind.QualityReport && congestion is not null)
+                    {
+                        var lossRate = LanDatagramCodec.ReadQualityReport(message.Payload.Span);
+                        var newBitrate = congestion.OnSample(frameLossRate: lossRate, rttMs: null);
+                        if (newBitrate != encoder.CurrentBitrateBps)
+                            encoder.SetBitrate(newBitrate);
+                    }
                 }
 
                 if (!duplicator.TryAcquireNextFrame(100, out var desktopFrame))
@@ -269,6 +295,10 @@ internal static partial class Program
                 $"[lan-host] latency rtt avg={latencyRttMs.Average():0.###}ms min={latencyRttMs.Min():0.###}ms " +
                 $"max={latencyRttMs.Max():0.###}ms, clock-offset avg={latencyOffsetMs.Average():0.###}ms (n={latencyRttMs.Count}).");
         }
+        if (congestion is not null)
+        {
+            logger.Info($"[lan-host] adaptive bitrate ended at {encoder.CurrentBitrateBps / 1_000_000.0:0.##}Mbps.");
+        }
 
         if (targetFrames > 0 && encoded < targetFrames)
             throw new InvalidOperationException($"LAN host did not encode {targetFrames} frames within {runLimit!.Value.TotalSeconds:0}s (got {encoded}).");
@@ -347,6 +377,13 @@ internal static partial class Program
         var malformedDatagrams = 0L;
         var ended = false;
 
+        // Windowed frame-loss feedback for RemoteControl.Net.Congestion.CongestionController
+        // (docs/PHASE-4.md), sent back to the host ~1x/sec -- see "QualityReport" in LanDatagramCodec.
+        var nextQualityReport = TimeSpan.Zero;
+        var lastReportedCompleted = 0;
+        var lastReportedDropped = 0;
+        var lastReportedSkipped = 0;
+
         try
         {
             while (!window.IsClosed &&
@@ -356,6 +393,20 @@ internal static partial class Program
                 window.PumpEvents();
                 if (session is not null && window.TryConsumeResize(out var width, out var height))
                     session.Resize(width, height);
+
+                if (session is not null && activeHost is not null && run.Elapsed >= nextQualityReport)
+                {
+                    nextQualityReport = run.Elapsed + TimeSpan.FromSeconds(1);
+                    var completedDelta = session.CompletedFrames - lastReportedCompleted;
+                    var droppedDelta = session.DroppedIncompleteFrames - lastReportedDropped;
+                    var skippedDelta = session.SkippedForReordering - lastReportedSkipped;
+                    var opportunities = completedDelta + droppedDelta;
+                    var lossRate = opportunities > 0 ? (float)(droppedDelta + skippedDelta) / opportunities : 0f;
+                    socket.SendTo(LanDatagramCodec.CreateQualityReport(session.SessionId, lossRate), activeHost);
+                    lastReportedCompleted = session.CompletedFrames;
+                    lastReportedDropped = session.DroppedIncompleteFrames;
+                    lastReportedSkipped = session.SkippedForReordering;
+                }
 
                 if (!socket.Poll(10_000))
                 {

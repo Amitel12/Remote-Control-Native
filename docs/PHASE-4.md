@@ -4,8 +4,9 @@
 
 **Real lossy/reordering network validation done, and it found (and fixed) a
 genuine correctness bug the earlier synthetic-loss testing couldn't have
-caught. `CongestionController` (adaptive bitrate under constrained
-bandwidth) is not started.**
+caught. `CongestionController` is implemented and real-hardware verified,
+including a live NVENC bitrate reconfigure mid-stream. No bandwidth-capping
+test yet, and not run on a real two-machine network.**
 
 ## The lossy/reordering proxy
 
@@ -81,18 +82,56 @@ Phase 1 depacketizer bugfix established for loss -- now holding under real
 reordering too. (Exact counts will vary run to run, same caveat as Phase 1's
 FEC table -- the loss/reorder decisions are randomized.)
 
+## Adaptive bitrate
+
+`RemoteControl.Net.Congestion.CongestionController` is a classic AIMD
+controller (the same shape TCP congestion control uses): back off
+multiplicatively the instant either signal looks bad, climb back up
+additively only after several consecutive clean samples. Two independent
+signals, either enough to trigger a decrease:
+
+- **Client-reported frame loss** -- a new `LanDatagramCodec.QualityReport`
+  datagram, sent by the client back to the host roughly once a second,
+  carrying its own windowed fraction of frames that either never
+  reassembled (`DroppedIncompleteFrames`) or reassembled but got skipped by
+  the reorder buffer above (`SkippedForReordering`) -- both are visible
+  glitches from the viewer's side, so both count.
+- **RTT rising well above its own recent baseline** -- reuses the existing
+  latency-probe RTT samples from `docs/PHASE-1.md`; classic queueing/
+  bufferbloat congestion shows up here before loss usually does.
+
+Bounded to the encoder's own starting bitrate as the ceiling -- it only ever
+backs off and recovers, never pushes past the configured target quality.
+Applying a bitrate change to the *running* encoder needed a real NVENC
+capability that had never been used here: `NvEncoder.ReconfigureEncoder`
+(`Lennox.NvEncSharp`), wrapped as `NvencEncoder.SetBitrate()`, with
+`ResetEncoder`/`ForceIDR` both left false so a bitrate change doesn't force
+a fresh keyframe or drop reference frames -- just changes what the running
+session encodes next.
+
+Opt-in via `--adaptive-bitrate` on `--lan-host`/`--p2p-host` (existing
+runs without it are completely unaffected).
+
+**Real-hardware result** (RTX 3070, 1920x1080@60, 25% FEC parity, 15%
+bursty loss, `--adaptive-bitrate`, 600 frames): the controller detected the
+loss and cut bitrate exactly once, `8Mbps -> 6.8Mbps` (the configured 0.85
+decrease factor), via a genuinely live `NvEncReconfigureEncoder` call mid-
+stream -- untested before this. Client result: `completed=599, decoded=599,
+presented=599`, zero dropped/skipped -- the encoder transition produced no
+visible glitch or decode corruption at all, not even at the exact frame
+where the bitrate changed.
+
 ## What's not done
 
-- **`CongestionController` does not exist.** Nothing currently degrades
-  encoder bitrate/quality in response to observed loss or rising latency --
-  the stream either keeps its configured 8Mbps CBR or the connection just
-  gets worse. This is the actual "adaptive bitrate" half of Phase 4's name
-  and hasn't been started.
 - **No constrained-bandwidth test.** The proxy currently only does loss/
   reorder/jitter, not bandwidth capping/shaping -- the "watchable stream
   under... constrained bandwidth" half of the Phase 4 milestone needs that
   too, plus something to measure "watchable" against (the Phase 1 baseline
-  numbers).
+  numbers). The loss-driven half of adaptive bitrate is proven; the
+  bandwidth-driven half isn't tested at all yet.
+- **`CongestionController`'s AIMD constants (loss threshold, decrease/
+  increase factors, clean-sample count) are untuned** -- chosen for
+  plausibility, not measured against real perceptual quality/stutter.
 - Only tested on loopback so far (both host and client processes on this
   machine, proxy in between) -- not yet combined with a real two-machine
   network the way Phase 1/2 were.

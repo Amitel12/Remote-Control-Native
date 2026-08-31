@@ -67,7 +67,8 @@ internal static partial class Program
                     ParseRemoteEndpoint(lanHostTarget),
                     ReadFrameTarget(args),
                     ReadPercentOption(args, "--parity-percent", defaultValue: 0),
-                    ReadPercentOption(args, "--drop-percent", defaultValue: 0));
+                    ReadPercentOption(args, "--drop-percent", defaultValue: 0),
+                    args.Contains("--adaptive-bitrate"));
             }
             else if (lanClientPort is not null)
             {
@@ -86,7 +87,8 @@ internal static partial class Program
                     ReadRemoteCandidate(args),
                     ReadFrameTarget(args),
                     ReadPercentOption(args, "--parity-percent", defaultValue: 0),
-                    ReadPercentOption(args, "--drop-percent", defaultValue: 0));
+                    ReadPercentOption(args, "--drop-percent", defaultValue: 0),
+                    args.Contains("--adaptive-bitrate"));
             }
             else if (p2pClientPort is not null)
             {

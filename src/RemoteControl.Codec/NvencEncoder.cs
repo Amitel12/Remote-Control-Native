@@ -26,9 +26,11 @@ public sealed class NvencEncoder : IDisposable
     private ulong _nextTimestamp;
     private uint _frameIndex;
     private bool _disposed;
+    private uint _currentBitrateBps;
 
     public bool LowLatency { get; }
     public bool UsingHardware => true;
+    public uint CurrentBitrateBps => _currentBitrateBps;
 
     public unsafe NvencEncoder(
         MfDevice mfDevice, uint width, uint height, uint fpsNumerator, uint fpsDenominator,
@@ -58,64 +60,13 @@ public sealed class NvencEncoder : IDisposable
         {
             _encoder = LibNvEnc.OpenEncoderForDirectX(mfDevice.Device.NativePointer);
 
-            var tuning = lowLatency ? NvEncTuningInfo.UltraLowLatency : NvEncTuningInfo.HighQuality;
-            var preset = lowLatency ? NvEncPresetGuids.P1 : NvEncPresetGuids.P4;
-            var config = _encoder.GetEncodePresetConfigEx(NvEncCodecGuids.H264, preset, tuning).PresetCfg;
-
-            // IPPP only: FrameIntervalP=1 disables B-frames. A short periodic
-            // IDR interval bounds recovery time after packet loss, and SPS/PPS
-            // are repeated at each IDR so a receiver can join mid-stream.
-            var gopLength = Math.Max(1u, fpsNumerator * 2 / fpsDenominator);
-            config.ProfileGuid = NvEncProfileGuids.H264High;
-            config.GopLength = gopLength;
-            config.FrameIntervalP = 1;
-            config.FrameFieldMode = NvEncParamsFrameFieldMode.Frame;
-
-            var rc = config.RcParams;
-            rc.RateControlMode = NvEncParamsRcMode.Cbr;
-            rc.AverageBitRate = bitrateBps;
-            rc.MaxBitRate = bitrateBps;
-            rc.EnableLookahead = false;
-            rc.ZeroReorderDelay = lowLatency;
-            if (lowLatency)
-            {
-                var oneFrameBits = (uint)Math.Max(1UL, (ulong)bitrateBps * fpsDenominator / fpsNumerator);
-                rc.VbvBufferSize = oneFrameBits;
-                rc.VbvInitialDelay = oneFrameBits;
-            }
-            config.RcParams = rc;
-
-            var codecConfig = config.EncodeCodecConfig;
-            var h264 = codecConfig.H264Config;
-            h264.IdrPeriod = gopLength;
-            h264.RepeatSPSPPS = true;
-            h264.OutputAUD = true;
-            h264.ChromaFormatIDC = 1;
-            codecConfig.H264Config = h264;
-            config.EncodeCodecConfig = codecConfig;
-
+            var config = BuildEncodeConfig(bitrateBps);
             var configPointer = &config;
-            var initialize = new NvEncInitializeParams
-            {
-                Version = NV_ENC_INITIALIZE_PARAMS_VER,
-                EncodeGuid = NvEncCodecGuids.H264,
-                PresetGuid = preset,
-                EncodeWidth = width,
-                EncodeHeight = height,
-                MaxEncodeWidth = width,
-                MaxEncodeHeight = height,
-                DarWidth = width,
-                DarHeight = height,
-                FrameRateNum = fpsNumerator,
-                FrameRateDen = fpsDenominator,
-                EnableEncodeAsync = 0,
-                EnablePTD = 1,
-                EncodeConfig = configPointer,
-                TuningInfo = tuning,
-            };
+            var initialize = BuildInitializeParams(configPointer);
 
             _encoder.InitializeEncoder(ref initialize);
             _bitstreamBuffer = _encoder.CreateBitstreamBuffer();
+            _currentBitrateBps = bitrateBps;
 
             _log.Info(
                 $"Native NVENC H.264 encoder ready ({width}x{height}@{(double)fpsNumerator / fpsDenominator:0.##}fps, " +
@@ -127,6 +78,96 @@ public sealed class NvencEncoder : IDisposable
             Dispose();
             throw;
         }
+    }
+
+    private unsafe NvEncConfig BuildEncodeConfig(uint bitrateBps)
+    {
+        var tuning = LowLatency ? NvEncTuningInfo.UltraLowLatency : NvEncTuningInfo.HighQuality;
+        var preset = LowLatency ? NvEncPresetGuids.P1 : NvEncPresetGuids.P4;
+        var config = _encoder.GetEncodePresetConfigEx(NvEncCodecGuids.H264, preset, tuning).PresetCfg;
+
+        // IPPP only: FrameIntervalP=1 disables B-frames. A short periodic
+        // IDR interval bounds recovery time after packet loss, and SPS/PPS
+        // are repeated at each IDR so a receiver can join mid-stream.
+        var gopLength = Math.Max(1u, _fpsNumerator * 2 / _fpsDenominator);
+        config.ProfileGuid = NvEncProfileGuids.H264High;
+        config.GopLength = gopLength;
+        config.FrameIntervalP = 1;
+        config.FrameFieldMode = NvEncParamsFrameFieldMode.Frame;
+
+        var rc = config.RcParams;
+        rc.RateControlMode = NvEncParamsRcMode.Cbr;
+        rc.AverageBitRate = bitrateBps;
+        rc.MaxBitRate = bitrateBps;
+        rc.EnableLookahead = false;
+        rc.ZeroReorderDelay = LowLatency;
+        if (LowLatency)
+        {
+            var oneFrameBits = (uint)Math.Max(1UL, (ulong)bitrateBps * _fpsDenominator / _fpsNumerator);
+            rc.VbvBufferSize = oneFrameBits;
+            rc.VbvInitialDelay = oneFrameBits;
+        }
+        config.RcParams = rc;
+
+        var codecConfig = config.EncodeCodecConfig;
+        var h264 = codecConfig.H264Config;
+        h264.IdrPeriod = gopLength;
+        h264.RepeatSPSPPS = true;
+        h264.OutputAUD = true;
+        h264.ChromaFormatIDC = 1;
+        codecConfig.H264Config = h264;
+        config.EncodeCodecConfig = codecConfig;
+
+        return config;
+    }
+
+    private unsafe NvEncInitializeParams BuildInitializeParams(NvEncConfig* configPointer) => new()
+    {
+        Version = NV_ENC_INITIALIZE_PARAMS_VER,
+        EncodeGuid = NvEncCodecGuids.H264,
+        PresetGuid = LowLatency ? NvEncPresetGuids.P1 : NvEncPresetGuids.P4,
+        EncodeWidth = _width,
+        EncodeHeight = _height,
+        MaxEncodeWidth = _width,
+        MaxEncodeHeight = _height,
+        DarWidth = _width,
+        DarHeight = _height,
+        FrameRateNum = _fpsNumerator,
+        FrameRateDen = _fpsDenominator,
+        EnableEncodeAsync = 0,
+        EnablePTD = 1,
+        EncodeConfig = configPointer,
+        TuningInfo = LowLatency ? NvEncTuningInfo.UltraLowLatency : NvEncTuningInfo.HighQuality,
+    };
+
+    /// <summary>
+    /// Live bitrate change via NVENC's own reconfigure path -- cheap, no
+    /// dropped reference frames/forced IDR (<c>ResetEncoder</c>/<c>ForceIDR</c>
+    /// both left false), unlike tearing down and recreating the encoder.
+    /// The feed for RemoteControl.Net.Congestion.CongestionController
+    /// (docs/PHASE-4.md) -- degrading quality under constrained bandwidth
+    /// needs to change the running encoder's output, not just future ones.
+    /// </summary>
+    public unsafe void SetBitrate(uint bitrateBps)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (bitrateBps == _currentBitrateBps)
+            return;
+
+        var config = BuildEncodeConfig(bitrateBps);
+        var configPointer = &config;
+        var initialize = BuildInitializeParams(configPointer);
+        var reconfigure = new NvEncReconfigureParams
+        {
+            Version = NV_ENC_RECONFIGURE_PARAMS_VER,
+            ReInitEncodeParams = initialize,
+            ResetEncoder = false,
+            ForceIDR = false,
+        };
+
+        _encoder.ReconfigureEncoder(ref reconfigure);
+        _log.Info($"NVENC bitrate reconfigured: {_currentBitrateBps / 1_000_000.0:0.##}Mbps -> {bitrateBps / 1_000_000.0:0.##}Mbps.");
+        _currentBitrateBps = bitrateBps;
     }
 
     /// <summary>

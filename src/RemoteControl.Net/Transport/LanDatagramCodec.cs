@@ -10,6 +10,7 @@ public enum LanDatagramKind : byte
     End = 4,
     LatencyProbe = 5,
     LatencyEcho = 6,
+    QualityReport = 7,
 }
 
 public readonly record struct LanDatagram(
@@ -40,6 +41,12 @@ public static class LanDatagramCodec
     private const int LatencyEchoPayloadSize = 24;
     private const int LatencyProbeSize = CommonHeaderSize + LatencyProbePayloadSize;
     private const int LatencyEchoSize = CommonHeaderSize + LatencyEchoPayloadSize;
+
+    // QualityReport payload: [FrameLossRate float32], 0..1 -- the client's own windowed
+    // fraction of frames that never fully reassembled even after FEC recovery. See
+    // RemoteControl.Net.Congestion.CongestionController, the only consumer.
+    private const int QualityReportPayloadSize = 4;
+    private const int QualityReportSize = CommonHeaderSize + QualityReportPayloadSize;
 
     public static byte[] CreateConfiguration(
         ulong sessionId,
@@ -121,6 +128,18 @@ public static class LanDatagramCodec
          BinaryPrimitives.ReadInt64LittleEndian(payload[8..16]),
          BinaryPrimitives.ReadInt64LittleEndian(payload[16..24]));
 
+    /// <summary>Sent by the client, roughly once a second -- its own recent frame-loss rate (0..1), the feedback signal RemoteControl.Net.Congestion.CongestionController reacts to.</summary>
+    public static byte[] CreateQualityReport(ulong sessionId, float frameLossRate)
+    {
+        var datagram = CreateHeader(LanDatagramKind.QualityReport, sessionId, QualityReportSize);
+        BinaryPrimitives.WriteSingleLittleEndian(datagram.AsSpan(CommonHeaderSize, 4), frameLossRate);
+        return datagram;
+    }
+
+    /// <summary>Reads a <see cref="LanDatagramKind.QualityReport"/> datagram's payload.</summary>
+    public static float ReadQualityReport(ReadOnlySpan<byte> payload) =>
+        BinaryPrimitives.ReadSingleLittleEndian(payload[..4]);
+
     public static bool TryRead(ReadOnlySpan<byte> source, out LanDatagram datagram)
     {
         datagram = default;
@@ -167,6 +186,7 @@ public static class LanDatagramCodec
             case LanDatagramKind.Video when source.Length > CommonHeaderSize:
             case LanDatagramKind.LatencyProbe when source.Length == LatencyProbeSize:
             case LanDatagramKind.LatencyEcho when source.Length == LatencyEchoSize:
+            case LanDatagramKind.QualityReport when source.Length == QualityReportSize:
                 datagram = new LanDatagram(
                     kind,
                     sessionId,
