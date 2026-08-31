@@ -111,4 +111,26 @@ public class CongestionControllerTests
     {
         Assert.Throws<ArgumentOutOfRangeException>(() => new CongestionController(10_000_000, 1_000_000, 8_000_000));
     }
+
+    [Fact]
+    public void RepeatedDecreases_CapIncreasesBelowHardMax_UntilEarnedBackBySustainedCleanRun()
+    {
+        var controller = new CongestionController(
+            8_000_000, 1_000_000, 8_000_000, decreaseFactor: 0.5, increaseFactor: 1.5, cleanSamplesBeforeIncrease: 1);
+
+        controller.OnSample(frameLossRate: 0.5, rttMs: null); // 8M -> 4M, soft ceiling remembered at 8M (== hard max, no visible cap yet).
+        controller.OnSample(frameLossRate: 0.5, rttMs: null); // 4M -> 2M, soft ceiling now 4M -- strictly below the hard max.
+
+        // Climbing back must stop at the soft ceiling (4M), not jump toward the hard max (8M).
+        var afterFirstClimb = controller.OnSample(frameLossRate: 0, rttMs: null);
+        Assert.Equal(3_000_000u, afterFirstClimb); // 2M * 1.5, still below the 4M ceiling -- unconstrained.
+
+        var afterSecondClimb = controller.OnSample(frameLossRate: 0, rttMs: null);
+        Assert.Equal(4_000_000u, afterSecondClimb); // 3M * 1.5 = 4.5M would overshoot -- clamped to the 4M ceiling.
+
+        // Pinned exactly at the soft ceiling for one more clean sample earns back headroom: the
+        // ceiling itself grows, and the bitrate can then climb past its old 4M cap.
+        var afterEarnedHeadroom = controller.OnSample(frameLossRate: 0, rttMs: null);
+        Assert.Equal(6_000_000u, afterEarnedHeadroom); // ceiling 4M -> 6M, bitrate 4M -> 6M, both still below the 8M hard max.
+    }
 }

@@ -25,6 +25,9 @@ public sealed class CongestionController
     private readonly uint _maxBitrateBps;
     private double _rttBaselineMs = -1;
     private int _consecutiveCleanSamples;
+    // Soft ceiling for increases, separate from the hard _maxBitrateBps -- see remarks on
+    // OnSample's decrease branch for why (docs/PHASE-4.md, real cellular-link tuning).
+    private uint _recentCeilingBps;
 
     public double LossThreshold { get; }
     public double RttSpikeMultiplier { get; }
@@ -51,6 +54,7 @@ public sealed class CongestionController
 
         _minBitrateBps = minBitrateBps;
         _maxBitrateBps = maxBitrateBps;
+        _recentCeilingBps = maxBitrateBps;
         CurrentBitrateBps = startingBitrateBps;
         LossThreshold = lossThreshold;
         RttSpikeMultiplier = rttSpikeMultiplier;
@@ -81,6 +85,13 @@ public sealed class CongestionController
         if (lossExceeded || rttSpiked)
         {
             _consecutiveCleanSamples = 0;
+            // Remember the level that just proved too much as a *soft* ceiling for future
+            // increases, instead of always climbing straight back toward the hard configured max
+            // -- without this, a link sitting right at its real capacity produces a repeating
+            // climb-to-max-then-immediately-crash cycle (observed for real on a marginal cellular
+            // link, docs/PHASE-4.md), wasting the climbed-back quality every time. Relaxed back
+            // upward below once a sustained clean run proves out right at this ceiling.
+            _recentCeilingBps = CurrentBitrateBps;
             var decreased = (uint)Math.Max(_minBitrateBps, CurrentBitrateBps * DecreaseFactor);
             CurrentBitrateBps = decreased;
             // A real spike/loss event re-baselines RTT too -- otherwise a sustained-but-stable
@@ -95,10 +106,21 @@ public sealed class CongestionController
             return CurrentBitrateBps;
 
         _consecutiveCleanSamples++;
-        if (_consecutiveCleanSamples >= CleanSamplesBeforeIncrease && CurrentBitrateBps < _maxBitrateBps)
+        if (_consecutiveCleanSamples >= CleanSamplesBeforeIncrease)
         {
             _consecutiveCleanSamples = 0;
-            CurrentBitrateBps = (uint)Math.Min(_maxBitrateBps, CurrentBitrateBps * IncreaseFactor);
+
+            if (CurrentBitrateBps >= _recentCeilingBps && _recentCeilingBps < _maxBitrateBps)
+            {
+                // Pinned at the soft ceiling for a whole extra clean streak -- the link may have
+                // genuinely recovered past whatever caused the last backoff, so earn back a
+                // little more headroom to cautiously re-probe higher.
+                _recentCeilingBps = (uint)Math.Min(_maxBitrateBps, _recentCeilingBps * IncreaseFactor);
+            }
+
+            if (CurrentBitrateBps < _recentCeilingBps)
+                CurrentBitrateBps = (uint)Math.Min(_recentCeilingBps, CurrentBitrateBps * IncreaseFactor);
+
             if (rttMs is { } sample) _rttBaselineMs = sample; // slowly track a genuinely-improved baseline too.
         }
 
