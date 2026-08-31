@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Net;
 using RemoteControl.Capture;
 using RemoteControl.Codec;
 using RemoteControl.Common;
@@ -31,13 +32,16 @@ internal static partial class Program
         var logger = new ConsoleLogger("LoopbackHarness");
         var lanHostTarget = ReadOption(args, "--lan-host");
         var lanClientPort = ReadOption(args, "--lan-client");
-        if (lanHostTarget is not null && lanClientPort is not null)
+        var p2pHostPort = ReadOption(args, "--p2p-host");
+        var p2pClientPort = ReadOption(args, "--p2p-client");
+        var networkModes = new[] { lanHostTarget, lanClientPort, p2pHostPort, p2pClientPort }.Count(m => m is not null);
+        if (networkModes > 1)
         {
-            logger.Error("Choose either --lan-host or --lan-client, not both.");
+            logger.Error("Choose exactly one of --lan-host, --lan-client, --p2p-host, --p2p-client.");
             return 2;
         }
 
-        if (lanHostTarget is null && lanClientPort is null && !RunStep0(logger))
+        if (networkModes == 0 && !RunStep0(logger))
             return 2;
 
         // MftProbe.Enumerate (Step 0) pairs its own MFStartup with an
@@ -68,6 +72,27 @@ internal static partial class Program
                 RunLanClient(
                     logger,
                     ParseListenPort(lanClientPort),
+                    ReadFrameTarget(args),
+                    verifyFrame: !args.Contains("--no-verify-frame"));
+            }
+            else if (p2pHostPort is not null)
+            {
+                RunP2pHost(
+                    logger,
+                    ParseListenPort(p2pHostPort),
+                    ParseStunServer(ReadOption(args, "--stun-server") ?? "stun.l.google.com:19302"),
+                    ReadRemoteCandidate(args),
+                    ReadFrameTarget(args),
+                    ReadPercentOption(args, "--parity-percent", defaultValue: 0),
+                    ReadPercentOption(args, "--drop-percent", defaultValue: 0));
+            }
+            else if (p2pClientPort is not null)
+            {
+                RunP2pClient(
+                    logger,
+                    ParseListenPort(p2pClientPort),
+                    ParseStunServer(ReadOption(args, "--stun-server") ?? "stun.l.google.com:19302"),
+                    ReadRemoteCandidate(args),
                     ReadFrameTarget(args),
                     verifyFrame: !args.Contains("--no-verify-frame"));
             }
@@ -114,6 +139,16 @@ internal static partial class Program
         }
 
         return frameTarget;
+    }
+
+    private static IPEndPoint? ReadRemoteCandidate(string[] args)
+    {
+        var value = ReadOption(args, "--remote-candidate");
+        if (value is null)
+            return null;
+        if (!IPEndPoint.TryParse(value, out var candidate))
+            throw new ArgumentException($"--remote-candidate requires ip:port; got '{value}'.");
+        return candidate;
     }
 
     private static int ReadPercentOption(string[] args, string option, int defaultValue)

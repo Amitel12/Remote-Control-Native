@@ -18,6 +18,17 @@ public sealed class UdpTransport : IUdpTransport
             _socket.SendBufferSize = sendBufferSize;
     }
 
+    /// <summary>
+    /// Wraps an already-bound socket instead of creating one -- for the P2P
+    /// path, where the same socket used for STUN discovery and
+    /// <see cref="Stun.HolePunchCoordinator"/> must keep being used for video
+    /// traffic too (a NAT's mapping is bound to that specific local port).
+    /// </summary>
+    public UdpTransport(Socket existingSocket)
+    {
+        _socket = existingSocket;
+    }
+
     public int Available => _socket.Available;
 
     public EndPoint? LocalEndPoint => _socket.LocalEndPoint;

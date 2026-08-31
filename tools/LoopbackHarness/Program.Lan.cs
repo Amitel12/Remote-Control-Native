@@ -43,11 +43,25 @@ internal static partial class Program
 
     private static void RunLanHost(ILogger logger, IPEndPoint clientEndpoint, int targetFrames, int parityPercent, int dropPercent)
     {
+        using IUdpTransport socket = new UdpTransport(LanReceiveBufferSize, LanReceiveBufferSize);
+        socket.Connect(clientEndpoint);
+        RunLanHostWithTransport(logger, socket, clientEndpoint.ToString(), targetFrames, parityPercent, dropPercent);
+    }
+
+    /// <summary>
+    /// Retries <see cref="RunLanHostSession"/> across desktop-mode changes,
+    /// reusing the same <paramref name="socket"/> throughout -- essential for
+    /// the P2P path, where recreating the socket would abandon the punched
+    /// NAT mapping and need a fresh hole-punch.
+    /// </summary>
+    private static void RunLanHostWithTransport(
+        ILogger logger, IUdpTransport socket, string peerDescription, int targetFrames, int parityPercent, int dropPercent)
+    {
         while (true)
         {
             try
             {
-                RunLanHostSession(logger, clientEndpoint, targetFrames, parityPercent, dropPercent);
+                RunLanHostSession(logger, socket, peerDescription, targetFrames, parityPercent, dropPercent);
                 return;
             }
             catch (DesktopConfigurationChangedException ex)
@@ -57,9 +71,10 @@ internal static partial class Program
         }
     }
 
-    private static void RunLanHostSession(ILogger logger, IPEndPoint clientEndpoint, int targetFrames, int parityPercent, int dropPercent)
+    private static void RunLanHostSession(
+        ILogger logger, IUdpTransport socket, string peerDescription, int targetFrames, int parityPercent, int dropPercent)
     {
-        logger.Info($"Phase 1 LAN host: capture -> native NVENC -> UDP {clientEndpoint}" +
+        logger.Info($"Phase 1 LAN host: capture -> native NVENC -> UDP {peerDescription}" +
                     $"{(parityPercent > 0 ? $", {parityPercent}% FEC parity" : "")}" +
                     $"{(dropPercent > 0 ? $", simulating {dropPercent}% video-shard loss (diagnostic only)" : "")}.");
 
@@ -87,9 +102,6 @@ internal static partial class Program
             FpsDenominator,
             lowLatency: true,
             logger: logger);
-        using IUdpTransport socket = new UdpTransport(LanReceiveBufferSize, LanReceiveBufferSize);
-        socket.Connect(clientEndpoint);
-
         Span<byte> sessionBytes = stackalloc byte[sizeof(ulong)];
         RandomNumberGenerator.Fill(sessionBytes);
         var sessionId = BinaryPrimitives.ReadUInt64LittleEndian(sessionBytes);
@@ -305,7 +317,14 @@ internal static partial class Program
     private static void RunLanClient(ILogger logger, int listenPort, int targetFrames, bool verifyFrame)
     {
         logger.Info($"Phase 1 LAN client: listening for UDP video on 0.0.0.0:{listenPort}.");
+        using IUdpTransport socket = new UdpTransport(LanReceiveBufferSize, sendBufferSize: 0);
+        socket.Bind(new IPEndPoint(IPAddress.Any, listenPort));
+        logger.Info($"LAN client bound to {socket.LocalEndPoint}; start the host with --lan-host <this-PC-ip>:{listenPort}.");
+        RunLanClientSession(logger, socket, targetFrames, verifyFrame);
+    }
 
+    private static void RunLanClientSession(ILogger logger, IUdpTransport socket, int targetFrames, bool verifyFrame)
+    {
         using var mfDevice = MfDevice.Create(logger);
         var displays = DisplayEnumerator.Enumerate(mfDevice.Device);
         if (displays.Count == 0)
@@ -314,9 +333,6 @@ internal static partial class Program
         using var window = new PresentationWindow(
             presentationDisplay,
             "Remote-Control-Native — Phase 1 LAN client");
-        using IUdpTransport socket = new UdpTransport(LanReceiveBufferSize, sendBufferSize: 0);
-        socket.Bind(new IPEndPoint(IPAddress.Any, listenPort));
-        logger.Info($"LAN client bound to {socket.LocalEndPoint}; start the host with --lan-host <this-PC-ip>:{listenPort}.");
         logger.Info("The presentation window stays black until a host completes the handshake.");
 
         var receiveBuffer = new byte[ushort.MaxValue + 1];
