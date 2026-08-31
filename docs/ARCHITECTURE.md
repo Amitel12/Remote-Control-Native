@@ -266,15 +266,20 @@ Ordered so the two highest-risk unknowns surface first, not last.
    different home networks connect and stream direct/STUN -- met. A
    restrictive-network test confirming TURN carries the protocol
    end-to-end -- still open.
-4. **Phase 3 -- Input capture + injection, lessons baked in.**
-   `InputInjector`/`RawInputCapture` (neither implemented yet -- only
-   `RemoteControl.Input`'s empty project scaffold exists).
+4. **Phase 3 -- Input capture + injection, lessons baked in. Injection half
+   implemented and real-hardware smoke-tested; capture half not started.**
+   `InputInjector` (`SendInput`, lessons #1/#2 baked in) is implemented and
+   verified via `tools/LoopbackHarness --input-demo` -- mouse movement,
+   Unicode typing (including a surrogate-pair emoji), a real `Enter`
+   keypress, and a Ctrl+A shortcut all confirmed on real hardware; see
+   `docs/PHASE-3.md`. `RawInputCapture` doesn't exist yet.
    `RemoteControl.Protocol.InputEvent`/`InputEventCodec` (already
-   implemented and tested) are the wire format they'll produce/consume.
-   Explicit regression checks required before moving on: (a) click/drag
-   accuracy at screen edges on 125%/150% DPI scaling, (b) typing English
-   text with *both* an English and a non-English host layout, (c) fast
-   drag overshoot + alt-tab mid-drag causing no stuck button on the host.
+   implemented and tested) are the wire format they produce/consume.
+   Explicit regression checks required before moving on -- **none of these
+   three have been run yet**: (a) click/drag accuracy at screen edges on
+   125%/150% DPI scaling, (b) typing English text with *both* an English and
+   a non-English host layout, (c) fast drag overshoot + alt-tab mid-drag
+   causing no stuck button on the host.
 5. **Phase 4 -- FEC + congestion control + adaptive bitrate.** The FEC
    math itself (`RemoteControl.Net.Fec.ReedSolomonCodec`) and the
    packetizer/depacketizer built on it are already implemented and tested

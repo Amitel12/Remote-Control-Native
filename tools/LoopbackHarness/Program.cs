@@ -41,7 +41,8 @@ internal static partial class Program
             return 2;
         }
 
-        if (networkModes == 0 && !RunStep0(logger))
+        var inputDemo = args.Contains("--input-demo");
+        if (networkModes == 0 && !inputDemo && !RunStep0(logger))
             return 2;
 
         // MftProbe.Enumerate (Step 0) pairs its own MFStartup with an
@@ -95,6 +96,10 @@ internal static partial class Program
                     ReadRemoteCandidate(args),
                     ReadFrameTarget(args),
                     verifyFrame: !args.Contains("--no-verify-frame"));
+            }
+            else if (inputDemo)
+            {
+                RunInputDemo(logger);
             }
             else if (args.Contains("--step1"))
             {

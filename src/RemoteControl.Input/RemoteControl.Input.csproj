@@ -15,6 +15,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\RemoteControl.Common\RemoteControl.Common.csproj" />
+    <ProjectReference Include="..\RemoteControl.Protocol\RemoteControl.Protocol.csproj" />
   </ItemGroup>
 
 </Project>
