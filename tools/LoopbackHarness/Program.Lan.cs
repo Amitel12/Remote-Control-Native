@@ -45,11 +45,11 @@ internal static partial class Program
         return port;
     }
 
-    private static void RunLanHost(ILogger logger, IPEndPoint clientEndpoint, int targetFrames, int parityPercent, int dropPercent, bool adaptiveBitrate, bool adaptiveFec, bool remoteInput)
+    private static void RunLanHost(ILogger logger, IPEndPoint clientEndpoint, int targetFrames, int parityPercent, int dropPercent, bool adaptiveBitrate, bool adaptiveFec, bool intraRefresh, bool remoteInput)
     {
         using IUdpTransport socket = new UdpTransport(LanReceiveBufferSize, LanReceiveBufferSize);
         socket.Connect(clientEndpoint);
-        RunLanHostWithTransport(logger, socket, clientEndpoint.ToString(), targetFrames, parityPercent, dropPercent, adaptiveBitrate, adaptiveFec, remoteInput);
+        RunLanHostWithTransport(logger, socket, clientEndpoint.ToString(), targetFrames, parityPercent, dropPercent, adaptiveBitrate, adaptiveFec, intraRefresh, remoteInput);
     }
 
     /// <summary>
@@ -59,13 +59,13 @@ internal static partial class Program
     /// NAT mapping and need a fresh hole-punch.
     /// </summary>
     private static void RunLanHostWithTransport(
-        ILogger logger, IUdpTransport socket, string peerDescription, int targetFrames, int parityPercent, int dropPercent, bool adaptiveBitrate, bool adaptiveFec, bool remoteInput)
+        ILogger logger, IUdpTransport socket, string peerDescription, int targetFrames, int parityPercent, int dropPercent, bool adaptiveBitrate, bool adaptiveFec, bool intraRefresh, bool remoteInput)
     {
         while (true)
         {
             try
             {
-                RunLanHostSession(logger, socket, peerDescription, targetFrames, parityPercent, dropPercent, adaptiveBitrate, adaptiveFec, remoteInput);
+                RunLanHostSession(logger, socket, peerDescription, targetFrames, parityPercent, dropPercent, adaptiveBitrate, adaptiveFec, intraRefresh, remoteInput);
                 return;
             }
             catch (DesktopConfigurationChangedException ex)
@@ -76,12 +76,13 @@ internal static partial class Program
     }
 
     private static void RunLanHostSession(
-        ILogger logger, IUdpTransport socket, string peerDescription, int targetFrames, int parityPercent, int dropPercent, bool adaptiveBitrate, bool adaptiveFec, bool remoteInput)
+        ILogger logger, IUdpTransport socket, string peerDescription, int targetFrames, int parityPercent, int dropPercent, bool adaptiveBitrate, bool adaptiveFec, bool intraRefresh, bool remoteInput)
     {
         logger.Info($"Phase 1 LAN host: capture -> native NVENC -> UDP {peerDescription}" +
                     $"{(adaptiveFec ? $", adaptive FEC (ceiling {(parityPercent > 0 ? parityPercent : 50)}% parity)" : parityPercent > 0 ? $", {parityPercent}% FEC parity" : "")}" +
                     $"{(dropPercent > 0 ? $", simulating {dropPercent}% video-shard loss (diagnostic only)" : "")}" +
-                    $"{(adaptiveBitrate ? ", adaptive bitrate enabled" : "")}.");
+                    $"{(adaptiveBitrate ? ", adaptive bitrate enabled" : "")}" +
+                    $"{(intraRefresh ? ", continuous intra-refresh (no periodic full IDR)" : "")}.");
 
         using var mfDevice = MfDevice.Create(logger);
         var displays = DisplayEnumerator.Enumerate(mfDevice.Device);
@@ -106,6 +107,7 @@ internal static partial class Program
             FpsNumerator,
             FpsDenominator,
             lowLatency: true,
+            intraRefresh: intraRefresh,
             logger: logger);
         Span<byte> sessionBytes = stackalloc byte[sizeof(ulong)];
         RandomNumberGenerator.Fill(sessionBytes);
@@ -605,7 +607,8 @@ internal static partial class Program
                     $"decoded={session.Decoded}, presented={session.Presented}, malformed={malformedDatagrams}, " +
                     $"incomplete={session.IncompleteFrames}, dropped-incomplete={session.DroppedIncompleteFrames}, " +
                     $"skipped-for-reordering={session.SkippedForReordering}, " +
-                    $"skipped-for-stale-present={session.SkippedForStalePresent}" +
+                    $"skipped-for-stale-present={session.SkippedForStalePresent}, " +
+                    $"reorder-window-ended={session.ReorderWindowFrames}" +
                     $"{(inputCapture is not null ? $", input-events-captured={inputEventsCaptured}, input-events-sent={inputEventsSent}" : "")}" +
                     $"{(dropInputPercent > 0 ? $", input-events-dropped-simulated={inputEventsDroppedSimulated}" : "")}.");
                 session.Dispose();
@@ -636,7 +639,16 @@ internal static partial class Program
         // just reordered) can't stall the pipeline forever. Small on purpose, matching FramePacer's
         // "near-zero, adaptive, not deep" jitter-buffer philosophy (see docs/ARCHITECTURE.md) --
         // this just applies that same philosophy to decode *order*, not only timing.
-        private const int MaxReorderWindowFrames = 8;
+        //
+        // Adaptive (docs/PHASE-4.md): starts at the floor and only grows when reordering
+        // actually forces a skip -- fast growth (real reordering is bursty, one miss often means
+        // more coming) and slow shrink (only after a long quiet streak) mirror the same AIMD
+        // shape CongestionController already uses for bitrate, just for window size instead.
+        private const int ReorderWindowFloor = 4;
+        private const int ReorderWindowCeiling = 32;
+        private const int QuietFramesBeforeShrink = 300;
+        private int _reorderWindowFrames = ReorderWindowFloor;
+        private int _framesSinceLastForcedSkip;
 
         private readonly HardwareDecoder _decoder;
         private readonly SwapChainPresenter _presenter;
@@ -651,6 +663,7 @@ internal static partial class Program
         private bool _sawFirstFrame;
         public int SkippedForReordering { get; private set; }
         public int SkippedForStalePresent { get; private set; }
+        public int ReorderWindowFrames => _reorderWindowFrames;
 
         public ulong SessionId { get; }
         public int CompletedFrames { get; private set; }
@@ -748,15 +761,25 @@ internal static partial class Program
 
             _pendingDecode[frameIndex] = encodedFrame;
 
-            while (_pendingDecode.Count >= MaxReorderWindowFrames && !_pendingDecode.ContainsKey(_nextFrameIndexToDecode))
+            while (_pendingDecode.Count >= _reorderWindowFrames && !_pendingDecode.ContainsKey(_nextFrameIndexToDecode))
             {
                 SkippedForReordering++;
                 _nextFrameIndexToDecode++;
+                // The window was too tight to hold this reorder -- grow it fast (real jitter is
+                // bursty, one miss often means more coming) rather than waiting to see if it
+                // happens again.
+                _reorderWindowFrames = Math.Min(ReorderWindowCeiling, _reorderWindowFrames + 4);
+                _framesSinceLastForcedSkip = 0;
             }
 
             while (_pendingDecode.Remove(_nextFrameIndexToDecode, out var next))
             {
                 _nextFrameIndexToDecode++;
+                if (++_framesSinceLastForcedSkip >= QuietFramesBeforeShrink)
+                {
+                    _reorderWindowFrames = Math.Max(ReorderWindowFloor, _reorderWindowFrames - 1);
+                    _framesSinceLastForcedSkip = 0;
+                }
                 // Another frame is already buffered right behind this one, so this one will be
                 // stale the instant it's shown -- still decode it (H.264 IPPP needs every frame
                 // decoded in order to keep the reference chain valid for the ones after it) but

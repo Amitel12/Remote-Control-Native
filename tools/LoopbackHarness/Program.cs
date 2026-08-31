@@ -72,6 +72,7 @@ internal static partial class Program
                     ReadPercentOption(args, "--drop-percent", defaultValue: 0),
                     args.Contains("--adaptive-bitrate"),
                     args.Contains("--adaptive-fec"),
+                    args.Contains("--intra-refresh"),
                     args.Contains("--remote-input"));
             }
             else if (lanClientPort is not null)
@@ -96,6 +97,7 @@ internal static partial class Program
                     ReadPercentOption(args, "--drop-percent", defaultValue: 0),
                     args.Contains("--adaptive-bitrate"),
                     args.Contains("--adaptive-fec"),
+                    args.Contains("--intra-refresh"),
                     args.Contains("--remote-input"));
             }
             else if (p2pClientPort is not null)

@@ -27,6 +27,7 @@ public sealed class NvencEncoder : IDisposable
     private uint _frameIndex;
     private bool _disposed;
     private uint _currentBitrateBps;
+    private readonly bool _intraRefresh;
 
     public bool LowLatency { get; }
     public bool UsingHardware => true;
@@ -34,7 +35,7 @@ public sealed class NvencEncoder : IDisposable
 
     public unsafe NvencEncoder(
         MfDevice mfDevice, uint width, uint height, uint fpsNumerator, uint fpsDenominator,
-        bool lowLatency, uint bitrateBps = 8_000_000, ILogger? logger = null)
+        bool lowLatency, uint bitrateBps = 8_000_000, bool intraRefresh = false, ILogger? logger = null)
     {
         if (width == 0 || height == 0 || (width & 1) != 0 || (height & 1) != 0)
             throw new ArgumentOutOfRangeException(nameof(width), "NV12 encoding requires non-zero even dimensions.");
@@ -48,6 +49,7 @@ public sealed class NvencEncoder : IDisposable
         _fpsDenominator = fpsDenominator;
         _sampleDuration = 10_000_000UL * fpsDenominator / fpsNumerator;
         LowLatency = lowLatency;
+        _intraRefresh = intraRefresh;
 
         var initializeStatus = LibNvEnc.TryInitialize(out var failure);
         if (initializeStatus != LibNcEncInitializeStatus.Success)
@@ -71,6 +73,7 @@ public sealed class NvencEncoder : IDisposable
             _log.Info(
                 $"Native NVENC H.264 encoder ready ({width}x{height}@{(double)fpsNumerator / fpsDenominator:0.##}fps, " +
                 $"{bitrateBps / 1_000_000.0:0.#}Mbps CBR, {(lowLatency ? "P1 ultra-low-latency IPPP" : "P4 high-quality IPPP")}, " +
+                $"{(intraRefresh ? "continuous intra-refresh (no periodic full IDR)" : "periodic full IDR")}, " +
                 "D3D11 NV12 input).");
         }
         catch
@@ -111,10 +114,31 @@ public sealed class NvencEncoder : IDisposable
 
         var codecConfig = config.EncodeCodecConfig;
         var h264 = codecConfig.H264Config;
-        h264.IdrPeriod = gopLength;
         h264.RepeatSPSPPS = true;
         h264.OutputAUD = true;
         h264.ChromaFormatIDC = 1;
+        if (_intraRefresh)
+        {
+            // Periodic full IDR frames are much larger than a regular P-frame even under a
+            // tight VBV (docs/PHASE-4.md "avoid keyframe bitrate spikes") -- continuous intra
+            // refresh spreads that same recovery-point guarantee (every macroblock gets
+            // refreshed once per IntraRefreshPeriod) evenly across every frame instead of
+            // bursting it into one, at the cost of a receiver needing up to one full period
+            // to become fully clean after joining mid-stream (not a real cost here -- this
+            // app always starts a session at the first frame, never mid-GOP).
+            // NVENC_INFINITE_GOPLENGTH (0xFFFFFFFF) -- no named constant in this wrapper --
+            // turns off NVENC's own periodic IDR/GOP boundary so intra-refresh is the only
+            // recovery mechanism instead of the two overlapping.
+            config.GopLength = uint.MaxValue;
+            h264.IdrPeriod = uint.MaxValue;
+            h264.EnableIntraRefresh = true;
+            h264.IntraRefreshPeriod = gopLength;
+            h264.IntraRefreshCnt = gopLength;
+        }
+        else
+        {
+            h264.IdrPeriod = gopLength;
+        }
         codecConfig.H264Config = h264;
         config.EncodeCodecConfig = codecConfig;
 
