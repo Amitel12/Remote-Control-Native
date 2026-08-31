@@ -249,15 +249,23 @@ Ordered so the two highest-risk unknowns surface first, not last.
    cross-machine LAN streaming with measured glass-to-glass latency as the
    baseline every later phase is compared
    against.
-3. **Phase 2 -- STUN + hole-punch + TURN fallback.** `StunClient`
-   (already implemented, see above) against the deployed coturn VPS; C#
-   `SignalingClient` (already implemented) implements register -> exchange
-   `stun-candidates` -> `HolePunchCoordinator` simultaneous-open, falling
-   back to TURN relay on timeout. `HolePunchCoordinator` itself doesn't
-   exist yet. **Milestone**: two machines on genuinely different home
-   networks connect and stream direct/STUN, plus a restrictive-network
-   (mobile hotspot) test confirming TURN actually carries the custom
-   protocol end-to-end.
+3. **Phase 2 -- STUN + hole-punch + TURN fallback. Core milestone met,
+   real-hardware verified.** `HolePunchCoordinator` (simultaneous-open UDP
+   hole punch) is implemented and tested; `tools/LoopbackHarness`'s
+   `--p2p-host`/`--p2p-client` modes proved it for real: this RTX 3070 PC
+   (home Ethernet) and a second PC tethered to mobile data (genuinely
+   different networks/NATs) connected directly in 68ms with no relay, then
+   streamed 300 real frames through the punched socket -- see
+   `docs/PHASE-2.md`. Candidate exchange is still manual (copy/paste) rather
+   than automated -- `SignalingClient` (already implemented) speaks the
+   `register`/`stun-candidates`/`hole-punch-ready` protocol, but nothing
+   wires it to `HolePunchCoordinator` yet, since no signaling server is
+   currently deployed to test against. TURN relay fallback (for a genuinely
+   restrictive/symmetric-NAT network, which this test's NAT happened not to
+   be) also remains unimplemented. **Milestone**: two machines on genuinely
+   different home networks connect and stream direct/STUN -- met. A
+   restrictive-network test confirming TURN carries the protocol
+   end-to-end -- still open.
 4. **Phase 3 -- Input capture + injection, lessons baked in.**
    `InputInjector`/`RawInputCapture` (neither implemented yet -- only
    `RemoteControl.Input`'s empty project scaffold exists).
