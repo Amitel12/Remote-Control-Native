@@ -87,4 +87,50 @@ internal static class Win32Native
     /// <summary>Fills in a hardware scan code alongside the VK for games/apps that read raw scan codes instead of virtual keys.</summary>
     [DllImport("user32.dll")]
     internal static extern uint MapVirtualKey(uint uCode, uint uMapType);
+
+    // -- Capture side: window subclassing + mouse capture --
+
+    internal const uint WmMouseMove = 0x0200;
+    internal const uint WmLButtonDown = 0x0201;
+    internal const uint WmLButtonUp = 0x0202;
+    internal const uint WmRButtonDown = 0x0204;
+    internal const uint WmRButtonUp = 0x0205;
+    internal const uint WmMButtonDown = 0x0207;
+    internal const uint WmMButtonUp = 0x0208;
+    internal const uint WmMouseWheel = 0x020A;
+    internal const uint WmMouseHWheel = 0x020E;
+    internal const uint WmKeyDown = 0x0100;
+    internal const uint WmKeyUp = 0x0101;
+    internal const uint WmSysKeyDown = 0x0104;
+    internal const uint WmSysKeyUp = 0x0105;
+    internal const uint WmChar = 0x0102;
+    internal const uint WmKillFocus = 0x0008;
+
+    internal const int GwlpWndProc = -4;
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct Rect
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
+    internal delegate nint WndProc(nint hWnd, uint msg, nint wParam, nint lParam);
+
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]
+    internal static extern nint SetWindowLongPtr(nint hWnd, int nIndex, nint dwNewLong);
+
+    [DllImport("user32.dll", EntryPoint = "CallWindowProcW")]
+    internal static extern nint CallWindowProc(nint lpPrevWndFunc, nint hWnd, uint msg, nint wParam, nint lParam);
+
+    [DllImport("user32.dll")]
+    internal static extern bool GetClientRect(nint hWnd, out Rect rect);
+
+    [DllImport("user32.dll")]
+    internal static extern nint SetCapture(nint hWnd);
+
+    [DllImport("user32.dll")]
+    internal static extern bool ReleaseCapture();
 }

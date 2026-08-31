@@ -266,16 +266,21 @@ Ordered so the two highest-risk unknowns surface first, not last.
    different home networks connect and stream direct/STUN -- met. A
    restrictive-network test confirming TURN carries the protocol
    end-to-end -- still open.
-4. **Phase 3 -- Input capture + injection, lessons baked in. Injection half
-   implemented and real-hardware smoke-tested; capture half not started.**
-   `InputInjector` (`SendInput`, lessons #1/#2 baked in) is implemented and
-   verified via `tools/LoopbackHarness --input-demo` -- mouse movement,
-   Unicode typing (including a surrogate-pair emoji), a real `Enter`
-   keypress, and a Ctrl+A shortcut all confirmed on real hardware; see
-   `docs/PHASE-3.md`. `RawInputCapture` doesn't exist yet.
+4. **Phase 3 -- Input capture + injection, lessons baked in. Both halves
+   implemented and real-hardware verified.** `InputInjector` (`SendInput`,
+   lessons #1/#2 baked in) and `RawInputCapture` (window subclassing,
+   lesson #3's `SetCapture`/`WM_KILLFOCUS` safety net) are both implemented
+   and verified via `tools/LoopbackHarness --input-demo`/
+   `--input-capture-demo` -- mouse movement, Unicode typing (including a
+   surrogate-pair emoji round-tripping through real capture), a real
+   `Enter` keypress, a working Ctrl+A shortcut, and a real focus-loss
+   mid-drag correctly synthesizing the missing button-release, all
+   confirmed on real hardware; see `docs/PHASE-3.md`.
    `RemoteControl.Protocol.InputEvent`/`InputEventCodec` (already
-   implemented and tested) are the wire format they produce/consume.
-   Explicit regression checks required before moving on -- **none of these
+   implemented and tested) are the wire format they produce/consume. No
+   real end-to-end loop wires capture -> network -> inject across two
+   machines yet -- that integration and the actual ENet input channels
+   remain. Explicit regression checks required before moving on -- **none of these
    three have been run yet**: (a) click/drag accuracy at screen edges on
    125%/150% DPI scaling, (b) typing English text with *both* an English and
    a non-English host layout, (c) fast drag overshoot + alt-tab mid-drag

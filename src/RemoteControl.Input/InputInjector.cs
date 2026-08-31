@@ -31,22 +31,6 @@ namespace RemoteControl.Input;
 /// </summary>
 public sealed class InputInjector
 {
-    private static readonly Dictionary<NamedKey, (ushort Vk, bool Extended)> NamedKeyMap = new()
-    {
-        [NamedKey.Enter] = (0x0D, false),
-        [NamedKey.Backspace] = (0x08, false),
-        [NamedKey.Tab] = (0x09, false),
-        [NamedKey.Escape] = (0x1B, false),
-        [NamedKey.Space] = (0x20, false),
-        [NamedKey.ArrowUp] = (0x26, true),
-        [NamedKey.ArrowDown] = (0x28, true),
-        [NamedKey.ArrowLeft] = (0x25, true),
-        [NamedKey.ArrowRight] = (0x27, true),
-        [NamedKey.Control] = (0x11, false),
-        [NamedKey.Alt] = (0x12, false),
-        [NamedKey.Shift] = (0x10, false),
-    };
-
     private readonly HashSet<MouseButton> _heldButtons = [];
     private readonly HashSet<NamedKey> _heldNamedKeys = [];
 
@@ -114,7 +98,7 @@ public sealed class InputInjector
 
         foreach (var namedKey in _heldNamedKeys.ToArray())
         {
-            if (NamedKeyMap.TryGetValue(namedKey, out var mapping))
+            if (NamedKeyMapping.ByNamedKey.TryGetValue(namedKey, out var mapping))
                 SendKeyboard(mapping.Vk, mapping.Extended, down: false);
             _heldNamedKeys.Remove(namedKey);
         }
@@ -184,7 +168,7 @@ public sealed class InputInjector
         {
             var namedKey = (NamedKey)code;
             if (down) _heldNamedKeys.Add(namedKey); else _heldNamedKeys.Remove(namedKey);
-            if (!NamedKeyMap.TryGetValue(namedKey, out var mapping))
+            if (!NamedKeyMapping.ByNamedKey.TryGetValue(namedKey, out var mapping))
                 return;
             SendKeyboard(mapping.Vk, mapping.Extended, down);
             return;
