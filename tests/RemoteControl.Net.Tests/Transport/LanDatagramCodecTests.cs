@@ -82,14 +82,16 @@ public class LanDatagramCodecTests
     public void Input_RoundTripsWithoutAliasingInput()
     {
         var payload = new byte[] { 1, 2, 3, 4 };
-        var bytes = LanDatagramCodec.WrapInput(9, payload);
+        var bytes = LanDatagramCodec.WrapInput(9, sequenceNumber: 7, payload);
 
         Assert.True(LanDatagramCodec.TryRead(bytes, out var datagram));
         bytes[^1] = 99;
 
         Assert.Equal(LanDatagramKind.Input, datagram.Kind);
         Assert.Equal(9UL, datagram.SessionId);
-        Assert.Equal(new byte[] { 1, 2, 3, 4 }, datagram.Payload.ToArray());
+        var (sequenceNumber, encodedEvent) = LanDatagramCodec.ReadInput(datagram.Payload);
+        Assert.Equal(7u, sequenceNumber);
+        Assert.Equal(new byte[] { 1, 2, 3, 4 }, encodedEvent.ToArray());
     }
 
     [Fact]

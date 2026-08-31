@@ -148,16 +148,28 @@ public static class LanDatagramCodec
     public static float ReadQualityReport(ReadOnlySpan<byte> payload) =>
         BinaryPrimitives.ReadSingleLittleEndian(payload[..4]);
 
+    private const int InputSequenceNumberSize = 4;
+
     /// <summary>
     /// Sent by the client, one per captured mouse/keyboard event -- see
-    /// RemoteControl.Input.RawInputCapture. Payload is a single
-    /// RemoteControl.Protocol.InputEventCodec-encoded event, opaque to this
-    /// envelope (same relationship as <see cref="WrapVideo"/> to a video
-    /// shard). Best-effort UDP, same as video and everything else on this
-    /// socket -- see docs/PHASE-3.md for the known risk that implies for a
-    /// lost MouseUp/KeyUp specifically.
+    /// RemoteControl.Input.RawInputCapture. Payload is
+    /// <paramref name="sequenceNumber"/> followed by a single
+    /// RemoteControl.Protocol.InputEventCodec-encoded event. Best-effort UDP
+    /// like everything else on this socket, so the client sends each event
+    /// under one sequence number more than once (see
+    /// tools/LoopbackHarness's redundant-send logic) as cheap protection
+    /// against independent packet loss for events with no other recovery
+    /// (docs/PHASE-3.md) -- <paramref name="sequenceNumber"/> is what lets
+    /// the host apply only the first copy of each and ignore the rest. The
+    /// host dedups by exact sequence-number membership (a bounded
+    /// recently-seen window), not by strict increasing order -- a naive
+    /// "reject anything not greater than the last applied" gate has a real
+    /// bug where one event's KeyUp (a numerically larger sequence number)
+    /// can get applied before its own KeyDown's redundant retry arrives,
+    /// causing that still-useful retry to be wrongly rejected as stale; see
+    /// tools/LoopbackHarness's InputSequenceDedup.
     /// </summary>
-    public static byte[] WrapInput(ulong sessionId, ReadOnlySpan<byte> encodedInputEvent)
+    public static byte[] WrapInput(ulong sessionId, uint sequenceNumber, ReadOnlySpan<byte> encodedInputEvent)
     {
         if (encodedInputEvent.IsEmpty)
             throw new ArgumentException("Encoded input event must not be empty.", nameof(encodedInputEvent));
@@ -165,10 +177,15 @@ public static class LanDatagramCodec
         var datagram = CreateHeader(
             LanDatagramKind.Input,
             sessionId,
-            checked(CommonHeaderSize + encodedInputEvent.Length));
-        encodedInputEvent.CopyTo(datagram.AsSpan(CommonHeaderSize));
+            checked(CommonHeaderSize + InputSequenceNumberSize + encodedInputEvent.Length));
+        BinaryPrimitives.WriteUInt32LittleEndian(datagram.AsSpan(CommonHeaderSize, InputSequenceNumberSize), sequenceNumber);
+        encodedInputEvent.CopyTo(datagram.AsSpan(CommonHeaderSize + InputSequenceNumberSize));
         return datagram;
     }
+
+    /// <summary>Reads a <see cref="LanDatagramKind.Input"/> datagram's payload -- its sequence number and the still-encoded InputEventCodec bytes.</summary>
+    public static (uint SequenceNumber, ReadOnlyMemory<byte> EncodedInputEvent) ReadInput(ReadOnlyMemory<byte> payload) =>
+        (BinaryPrimitives.ReadUInt32LittleEndian(payload.Span[..InputSequenceNumberSize]), payload[InputSequenceNumberSize..]);
 
     /// <summary>Sent by the client periodically -- its current held-button/held-key snapshot, so the host can release anything it mistakenly still thinks is held after a lost KeyUp/MouseUp.</summary>
     public static byte[] CreateInputStateSync(ulong sessionId, ushort heldMask)
@@ -229,7 +246,7 @@ public static class LanDatagramCodec
             case LanDatagramKind.LatencyProbe when source.Length == LatencyProbeSize:
             case LanDatagramKind.LatencyEcho when source.Length == LatencyEchoSize:
             case LanDatagramKind.QualityReport when source.Length == QualityReportSize:
-            case LanDatagramKind.Input when source.Length > CommonHeaderSize:
+            case LanDatagramKind.Input when source.Length > CommonHeaderSize + InputSequenceNumberSize:
             case LanDatagramKind.InputStateSync when source.Length == InputStateSyncSize:
                 datagram = new LanDatagram(
                     kind,

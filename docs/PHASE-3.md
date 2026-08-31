@@ -3,12 +3,15 @@
 ## Status
 
 **Both halves implemented and real-hardware verified, including the
-lesson #3 safety net, and now wired together end to end over the network --
-verified on both loopback and a real two-machine network. Not done -- see
-"What's not verified yet" below before treating this phase as complete
-(none of the three explicit regression checks have been run, and
-reliability of the network
-channel itself is a known open question).**
+lesson #3 safety net, wired together end to end over the network (verified
+on both loopback and a real two-machine network), and two real reliability
+gaps found and fixed -- a stuck button/modifier (InputStateSync) and
+garbled typed text (redundant send + InputSequenceDedup), the latter's
+first attempt itself having a real bug only caught by actually measuring
+the fix's effect. Not done -- see "What's not verified yet" below (the
+three DPI/layout/physical-overshoot regression checks, and re-verifying
+both reliability fixes on a real lossy network rather than only loopback/
+synthetic conditions).**
 
 `RemoteControl.Input.InputInjector` replays `RemoteControl.Protocol.InputEvent`
 via `SendInput` (real Win32 P/Invoke, `Win32Native.cs`, no package). Bakes in
@@ -199,6 +202,45 @@ key-state, not internal bookkeeping) confirmed both were genuinely held
 after press and genuinely released by reconciliation alone, with no
 explicit up-event involved. All 4 checks passed.
 
+## Typed-text loss: found, fixed, and empirically measured
+
+`InputStateSync` only fixes *held state* -- it does nothing for a dropped
+plain character keystroke (momentary, never tracked as "held"). Fix:
+redundant send. Each captured event now goes out twice (immediately, then
+~20ms later), tagged with a per-event sequence number, so the host can
+apply only the first copy it sees of each and ignore the rest --
+turning one independent loss chance `p` into `p^2` for both copies to be
+lost.
+
+**A new `--input-reliability-demo`** (real UDP sockets on loopback, real
+per-send loss simulation, no GPU/window/second machine needed since this
+isolates the mechanism itself) sends `"hello whatsup"` as real KeyDown
+events and reconstructs what the host-side logic actually applies. First
+version of this test found a **second real bug**, not just confirmed the
+fix: a naive "only apply if this sequence number is greater than the last
+one applied" gate meant a character's *KeyUp* (a numerically larger
+sequence number, sent right after its KeyDown) could get applied before
+the KeyDown's redundant retry arrived -- and the gate would then reject
+that still-useful retry as "stale," because a *different*, unrelated,
+larger sequence number had already gone through. Measured effect matched
+the predicted cost almost exactly: `0.7 + 0.3*0.3*0.7 ≈ 76.3%` predicted
+vs. `76.7%` observed, at 30% simulated loss -- redundancy was barely
+helping at all.
+
+Fixed with `InputSequenceDedup` (`tools/LoopbackHarness/InputSequenceDedup.cs`):
+dedup by exact sequence-number *membership* in a bounded recently-seen
+window (64 entries), not by strict increasing order -- reject only a true
+duplicate, never a legitimate retry just because something else numerically
+larger already went through. Shared between the real host code and the
+demo, so both are provably running the same fixed logic.
+
+**Real measured result, 30% simulated loss, averaged over 40 trials per
+condition (a single 13-character run has too much variance to trust
+alone)**: character-recovery rate went from **~70% without redundancy to
+~90% with it**, matching the `1 - 0.3^2 = 91%` theoretical prediction for
+the fixed dedup logic almost exactly. Confirmed consistent across five
+separate runs (69.2-71.5% without, 89.4-91.9% with).
+
 ## What's not verified yet
 
 - **None of `docs/ARCHITECTURE.md`'s three explicit Phase 3 regression
@@ -212,14 +254,16 @@ explicit up-event involved. All 4 checks passed.
   above) but used a synthetic off-screen window to steal focus, not a real
   physical alt-tab keystroke or a real fast-overshoot drag past the window
   edge; worth a manual pass with real hardware input specifically.
-- **The InputStateSync fix hasn't been re-verified on a real lossy
-  two-machine run yet** -- `--input-reconcile-demo` proves the
-  reconciliation logic itself is correct in isolation, but the full loop
-  (real capture -> real drop -> real sync -> real reconcile, all over an
-  actual network) hasn't been rerun since the fix landed.
-- **Typed-text loss itself has no recovery**: `InputStateSync` only fixes
-  *held state* (a button/modifier stuck down). A dropped plain character
-  keystroke (no modifier, momentary, never tracked as "held") is simply
-  gone -- `helatsp` would still happen today. Fixing that needs either
-  retry/ACK for character events specifically or finally bringing in
-  ENet's reliable channel for input, neither of which exists yet.
+- **Neither reliability fix (InputStateSync or redundant-send) has been
+  re-verified on a real lossy two-machine run yet** -- `--input-reconcile-demo`
+  and `--input-reliability-demo` both prove their respective mechanisms
+  correct in isolation (real sockets/real OS state, but loopback and
+  synthetic loss), not the full loop (real capture -> real drop -> real fix
+  -> real host, over an actual network) since either fix landed. Given that
+  the *first* attempt at redundant-send had a real bug only caught by
+  actually measuring the outcome, isolated-mechanism testing is good but
+  not a substitute for that same kind of measurement on a real network.
+- Redundant send only *reduces* loss (`p -> p^2`), it doesn't eliminate it
+  -- at high enough loss (the 50% test rate that first surfaced this
+  problem, not realistic conditions) some garbling will still occur. A
+  genuinely reliable channel would need real retry/ACK or ENet.

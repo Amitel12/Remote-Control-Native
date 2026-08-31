@@ -126,6 +126,8 @@ internal static partial class Program
         // physical pixels, the same coordinate space the client normalized against).
         var inputInjector = remoteInput ? new InputInjector() : null;
         var inputEventsReceived = 0L;
+        var inputEventsDuplicateOrStale = 0L;
+        var inputSequenceDedup = new InputSequenceDedup();
         var run = Stopwatch.StartNew();
         TimeSpan? runLimit = targetFrames == 0
             ? null
@@ -217,9 +219,19 @@ internal static partial class Program
                     {
                         try
                         {
-                            var inputEvent = InputEventCodec.Decode(message.Payload.Span);
-                            inputInjector.Inject(inputEvent, (int)selected.Left, (int)selected.Top, (int)selected.Width, (int)selected.Height);
-                            inputEventsReceived++;
+                            var (sequenceNumber, encodedEvent) = LanDatagramCodec.ReadInput(message.Payload);
+                            // Exact-membership dedup, not strict ordering -- see InputSequenceDedup's remarks
+                            // for the real bug a naive "only accept increasing" gate has with KeyDown/KeyUp pairs.
+                            if (inputSequenceDedup.TryAccept(sequenceNumber))
+                            {
+                                var inputEvent = InputEventCodec.Decode(encodedEvent.Span);
+                                inputInjector.Inject(inputEvent, (int)selected.Left, (int)selected.Top, (int)selected.Width, (int)selected.Height);
+                                inputEventsReceived++;
+                            }
+                            else
+                            {
+                                inputEventsDuplicateOrStale++;
+                            }
                         }
                         catch (Exception ex) when (ex is ArgumentException or IndexOutOfRangeException)
                         {
@@ -326,7 +338,7 @@ internal static partial class Program
         }
         if (inputInjector is not null)
         {
-            logger.Info($"[lan-host] input-events-received={inputEventsReceived}.");
+            logger.Info($"[lan-host] input-events-received={inputEventsReceived}, input-events-duplicate-or-stale={inputEventsDuplicateOrStale}.");
         }
 
         if (targetFrames > 0 && encoded < targetFrames)
@@ -410,25 +422,50 @@ internal static partial class Program
         // the host to inject -- see docs/PHASE-3.md. Opt-in: --remote-input on both ends.
         using var inputCapture = remoteInput ? new RawInputCapture(window.Handle) : null;
         var inputSendBuffer = new byte[InputEventCodec.MaxSize];
-        var inputEventsSent = 0L;
+        var inputEventsCaptured = 0L; // logical events (one per real keystroke/click/move).
+        var inputEventsSent = 0L; // physical sends that succeeded -- up to 2x captured, since each is sent twice.
         var inputEventsDroppedSimulated = 0L;
-        var inputDropRng = dropInputPercent > 0 ? new Random() : null;
+        var nextInputSequence = 0u;
         if (inputCapture is not null)
         {
-            inputCapture.Captured += inputEvent =>
+            // Redundant send (docs/PHASE-3.md): a lost plain keystroke (no modifier, so
+            // InputStateSync's held-state resync above can't fix it -- there's no "held" to
+            // reconcile) previously just vanished with zero recovery. Sending each event twice --
+            // once immediately, once ~20ms later -- turns a single independent packet-loss chance
+            // p into p^2 for both copies to be lost. The sequence number lets the host apply only
+            // the first copy it sees and ignore the rest.
+            void SendInputCopy(uint sequenceNumber, byte[] encodedEvent, IPEndPoint host, ulong sessionId)
             {
-                if (activeHost is null || session is null) return;
                 // Diagnostic-only, for proving out reliability (docs/PHASE-3.md) -- not a real
                 // network's loss, deliberately deterministic-rate so a lost MouseUp/KeyUp specifically
                 // can be reproduced on demand instead of hoping for it under generic packet loss.
-                if (inputDropRng is not null && inputDropRng.Next(100) < dropInputPercent)
+                // Each of the two copies rolls independently, matching how a real network would drop
+                // packets independently rather than "the logical event" as a whole.
+                if (dropInputPercent > 0 && Random.Shared.Next(100) < dropInputPercent)
                 {
-                    inputEventsDroppedSimulated++;
+                    Interlocked.Increment(ref inputEventsDroppedSimulated);
                     return;
                 }
+                socket.SendTo(LanDatagramCodec.WrapInput(sessionId, sequenceNumber, encodedEvent), host);
+                Interlocked.Increment(ref inputEventsSent);
+            }
+
+            inputCapture.Captured += inputEvent =>
+            {
+                if (activeHost is not { } host || session is not { } activeSession) return;
+                inputEventsCaptured++;
                 var length = InputEventCodec.Encode(inputEvent, inputSendBuffer);
-                socket.SendTo(LanDatagramCodec.WrapInput(session.SessionId, inputSendBuffer.AsSpan(0, length)), activeHost);
-                inputEventsSent++;
+                var encodedEvent = inputSendBuffer[..length]; // copied: the shared scratch buffer isn't safe to reference across the delayed resend below.
+                var sequenceNumber = nextInputSequence++;
+                var sessionId = activeSession.SessionId;
+
+                SendInputCopy(sequenceNumber, encodedEvent, host, sessionId);
+                _ = Task.Run(async () =>
+                {
+                    await Task.Delay(20);
+                    try { SendInputCopy(sequenceNumber, encodedEvent, host, sessionId); }
+                    catch (SocketException) { /* socket may have been disposed by session end -- not worth surfacing from a background resend. */ }
+                });
             };
             logger.Info("Remote input capture active -- real mouse/keyboard on the presentation window will be sent to the host." +
                         (dropInputPercent > 0 ? $" Simulating {dropInputPercent}% dropped input events (diagnostic only)." : ""));
@@ -460,7 +497,7 @@ internal static partial class Program
                 if (inputCapture is not null && activeHost is not null && session is not null && run.Elapsed >= nextInputStateSync)
                 {
                     nextInputStateSync = run.Elapsed + inputStateSyncInterval;
-                    if (inputDropRng is null || inputDropRng.Next(100) >= dropInputPercent)
+                    if (dropInputPercent == 0 || Random.Shared.Next(100) >= dropInputPercent)
                         socket.SendTo(LanDatagramCodec.CreateInputStateSync(session.SessionId, inputCapture.GetHeldMask()), activeHost);
                 }
 
@@ -545,7 +582,7 @@ internal static partial class Program
                     $"decoded={session.Decoded}, presented={session.Presented}, malformed={malformedDatagrams}, " +
                     $"incomplete={session.IncompleteFrames}, dropped-incomplete={session.DroppedIncompleteFrames}, " +
                     $"skipped-for-reordering={session.SkippedForReordering}" +
-                    $"{(inputCapture is not null ? $", input-events-sent={inputEventsSent}" : "")}" +
+                    $"{(inputCapture is not null ? $", input-events-captured={inputEventsCaptured}, input-events-sent={inputEventsSent}" : "")}" +
                     $"{(dropInputPercent > 0 ? $", input-events-dropped-simulated={inputEventsDroppedSimulated}" : "")}.");
                 session.Dispose();
             }
