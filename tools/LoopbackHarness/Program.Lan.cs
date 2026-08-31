@@ -581,7 +581,8 @@ internal static partial class Program
                     $"[lan-client] datagrams={datagramsReceived}, completed={session.CompletedFrames}, " +
                     $"decoded={session.Decoded}, presented={session.Presented}, malformed={malformedDatagrams}, " +
                     $"incomplete={session.IncompleteFrames}, dropped-incomplete={session.DroppedIncompleteFrames}, " +
-                    $"skipped-for-reordering={session.SkippedForReordering}" +
+                    $"skipped-for-reordering={session.SkippedForReordering}, " +
+                    $"skipped-for-stale-present={session.SkippedForStalePresent}" +
                     $"{(inputCapture is not null ? $", input-events-captured={inputEventsCaptured}, input-events-sent={inputEventsSent}" : "")}" +
                     $"{(dropInputPercent > 0 ? $", input-events-dropped-simulated={inputEventsDroppedSimulated}" : "")}.");
                 session.Dispose();
@@ -626,6 +627,7 @@ internal static partial class Program
         private uint _nextFrameIndexToDecode;
         private bool _sawFirstFrame;
         public int SkippedForReordering { get; private set; }
+        public int SkippedForStalePresent { get; private set; }
 
         public ulong SessionId { get; }
         public int CompletedFrames { get; private set; }
@@ -731,10 +733,25 @@ internal static partial class Program
 
             while (_pendingDecode.Remove(_nextFrameIndexToDecode, out var next))
             {
-                _decoder.Decode(next, Present);
                 _nextFrameIndexToDecode++;
+                // Another frame is already buffered right behind this one, so this one will be
+                // stale the instant it's shown -- still decode it (H.264 IPPP needs every frame
+                // decoded in order to keep the reference chain valid for the ones after it) but
+                // don't present it, so a backlog after a network stall snaps straight to the
+                // newest available frame instead of visibly replaying the whole gap.
+                if (_pendingDecode.ContainsKey(_nextFrameIndexToDecode))
+                {
+                    SkippedForStalePresent++;
+                    _decoder.Decode(next, DiscardDecoded);
+                }
+                else
+                {
+                    _decoder.Decode(next, Present);
+                }
             }
         }
+
+        private static void DiscardDecoded(DecodedFrame decodedFrame) => decodedFrame.Texture.Dispose();
 
         public void Resize(uint width, uint height) => _presenter.Resize(width, height);
 
