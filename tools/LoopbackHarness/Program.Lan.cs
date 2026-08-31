@@ -87,11 +87,7 @@ internal static partial class Program
             FpsDenominator,
             lowLatency: true,
             logger: logger);
-        using var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp)
-        {
-            ReceiveBufferSize = LanReceiveBufferSize,
-            SendBufferSize = LanReceiveBufferSize,
-        };
+        using IUdpTransport socket = new UdpTransport(LanReceiveBufferSize, LanReceiveBufferSize);
         socket.Connect(clientEndpoint);
 
         Span<byte> sessionBytes = stackalloc byte[sizeof(ulong)];
@@ -277,7 +273,7 @@ internal static partial class Program
             Thread.SpinWait(64);
     }
 
-    private static void WaitForLanClient(Socket socket, byte[] configuration, ulong sessionId, ILogger logger)
+    private static void WaitForLanClient(IUdpTransport socket, byte[] configuration, ulong sessionId, ILogger logger)
     {
         logger.Info("Waiting indefinitely for the LAN client handshake before sending the first IDR frame (Ctrl+C to stop).");
         var waiting = Stopwatch.StartNew();
@@ -292,7 +288,7 @@ internal static partial class Program
                 nextSend = waiting.Elapsed + TimeSpan.FromMilliseconds(250);
             }
 
-            if (!socket.Poll(50_000, SelectMode.SelectRead))
+            if (!socket.Poll(50_000))
                 continue;
 
             var received = socket.Receive(receiveBuffer);
@@ -318,10 +314,7 @@ internal static partial class Program
         using var window = new PresentationWindow(
             presentationDisplay,
             "Remote-Control-Native — Phase 1 LAN client");
-        using var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp)
-        {
-            ReceiveBufferSize = LanReceiveBufferSize,
-        };
+        using IUdpTransport socket = new UdpTransport(LanReceiveBufferSize, sendBufferSize: 0);
         socket.Bind(new IPEndPoint(IPAddress.Any, listenPort));
         logger.Info($"LAN client bound to {socket.LocalEndPoint}; start the host with --lan-host <this-PC-ip>:{listenPort}.");
         logger.Info("The presentation window stays black until a host completes the handshake.");
@@ -346,7 +339,7 @@ internal static partial class Program
                 if (session is not null && window.TryConsumeResize(out var width, out var height))
                     session.Resize(width, height);
 
-                if (!socket.Poll(10_000, SelectMode.SelectRead))
+                if (!socket.Poll(10_000))
                 {
                     if (session is not null && run.Elapsed - lastPacket > TimeSpan.FromSeconds(10))
                         throw new TimeoutException("LAN client received no video for 10 seconds after the stream started.");

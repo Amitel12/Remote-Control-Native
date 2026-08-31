@@ -180,9 +180,21 @@ make it worth the precision.
    "Latency instrumentation" above. The mechanism round-trips correctly on the
    localhost test; the real LAN glass-to-glass number is still item 1's gate,
    not this one's.
-4. Put the socket behind the planned transport abstraction (and decide whether
-   ENet adds value for the unreliable video-only baseline before adding reliable
-   control/input channels).
+4. ~~Put the socket behind the planned transport abstraction~~ **Done** --
+   `RemoteControl.Net.Transport.IUdpTransport`/`UdpTransport` now sit between
+   the LAN host/client and `System.Net.Sockets.Socket`; `Program.Lan.cs` no
+   longer references `Socket` directly. Decision on the other half of this
+   item (does ENet add value for the *video* channel specifically): **no, not
+   yet** -- video already carries its own Reed-Solomon FEC (see "FEC parity
+   recovery" above), so ENet's reliable channels don't help this traffic, and
+   its unreliable channel is just UDP with extra framing on top of what we
+   already hand-roll. Pulling in the native ENet-CSharp dependency now would
+   cost build/deployment complexity for no benefit to this path. ENet is still
+   the right call for Phase 3's input/control channel, which genuinely needs
+   reliable delivery -- that implementation can target `IUdpTransport` without
+   touching the video path. Verified on real hardware post-refactor: 100/100
+   captured/encoded/completed/decoded/presented, unchanged from pre-refactor
+   behavior.
 5. Repeat host resolution-change and Win+L recovery while the remote client is
    connected.
 

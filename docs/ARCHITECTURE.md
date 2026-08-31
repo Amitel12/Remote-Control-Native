@@ -235,13 +235,18 @@ Ordered so the two highest-risk unknowns surface first, not last.
 2. **Phase 1 -- LAN UDP streaming, two machines, no NAT traversal.**
    The first direct-UDP harness slice is now implemented: a configuration/
    ready handshake and session envelope wire `VideoPacketizer`/
-   `VideoDepacketizer` between separate host and client processes, with FEC
-   disabled for the low-loss baseline. A 300-frame 1080p localhost run
-   completed 300/300 capture, encode, reassembly, decode, and presentation
-   with zero malformed or incomplete frames; see `docs/PHASE-1.md`.
-   `EnetTransport`, the real two-machine run, and latency instrumentation are
-   still open. **Milestone**: live cross-machine LAN streaming with measured
-   glass-to-glass latency as the baseline every later phase is compared
+   `VideoDepacketizer` between separate host and client processes. A
+   300-frame 1080p localhost run completed 300/300 capture, encode,
+   reassembly, decode, and presentation with zero malformed or incomplete
+   frames; see `docs/PHASE-1.md`. FEC parity recovery, round-trip latency/
+   clock-offset instrumentation, and a socket seam (`IUdpTransport`/
+   `UdpTransport`) are also implemented and real-hardware verified -- see
+   "FEC parity recovery" and "Latency instrumentation" in `docs/PHASE-1.md`.
+   `EnetTransport` itself stays deferred to Phase 3's input/control channel
+   (see gate item 4 in `docs/PHASE-1.md` for why); the real two-machine run
+   is still open. **Milestone**: live cross-machine LAN streaming with
+   measured glass-to-glass latency as the baseline every later phase is
+   compared
    against.
 3. **Phase 2 -- STUN + hole-punch + TURN fallback.** `StunClient`
    (already implemented, see above) against the deployed coturn VPS; C#
