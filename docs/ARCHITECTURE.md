@@ -286,7 +286,8 @@ Ordered so the two highest-risk unknowns surface first, not last.
    a non-English host layout, (c) fast drag overshoot + alt-tab mid-drag
    causing no stuck button on the host.
 5. **Phase 4 -- FEC + congestion control + adaptive bitrate. Loss-driven
-   half real-hardware verified; bandwidth-capping not tested.**
+   half real-hardware verified on a real two-machine network; only
+   bandwidth-capping remains untested.**
    `tools/LossyProxy` (real UDP relay, bursty Gilbert-Elliott loss + genuine
    packet reordering + jitter) validated FEC/the depacketizer against real
    network impairment instead of just synthetic per-shard loss -- and found
@@ -298,11 +299,15 @@ Ordered so the two highest-risk unknowns surface first, not last.
    frame rather than stall" philosophy `FramePacer` already applies to
    timing, now applied to decode order too. `CongestionController` (AIMD,
    reacting to client-reported loss via a new `QualityReport` datagram and
-   to RTT spikes) is implemented and real-hardware verified: it detected
-   15% bursty loss and cut NVENC's live bitrate 8Mbps -> 6.8Mbps mid-stream
-   via `NvEncReconfigureEncoder` (never used here before) with zero decode
-   corruption or dropped frames at the transition. See `docs/PHASE-4.md`
-   for both results. Bandwidth capping/shaping itself isn't tested at all
+   to RTT spikes) is implemented and real-hardware verified on both
+   loopback and a real two-machine network (this PC and a second PC over
+   real home Wi-Fi, `tools/LossyProxy` relaying between them): on the real
+   network it reacted to genuinely changing conditions with four live
+   reconfigures in one run (two decreases, two recoveries) via
+   `NvEncReconfigureEncoder` (never used here before), with the
+   `completed == decoded == presented` invariant holding throughout --
+   zero decode corruption at any transition. See `docs/PHASE-4.md` for
+   both results. Bandwidth capping/shaping itself isn't tested at all
    yet -- only the loss-driven half of "adaptive bitrate" is proven.
    **Milestone**:
    watchable stream under injected 1-5% loss and constrained bandwidth,

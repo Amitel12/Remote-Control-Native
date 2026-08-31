@@ -4,9 +4,10 @@
 
 **Real lossy/reordering network validation done, and it found (and fixed) a
 genuine correctness bug the earlier synthetic-loss testing couldn't have
-caught. `CongestionController` is implemented and real-hardware verified,
-including a live NVENC bitrate reconfigure mid-stream. No bandwidth-capping
-test yet, and not run on a real two-machine network.**
+caught. `CongestionController` is implemented and real-hardware verified on
+both loopback and a real two-machine network, including multiple live NVENC
+bitrate reconfigures mid-stream. Only bandwidth-capping (as opposed to
+loss-driven adaptation) remains untested.**
 
 ## The lossy/reordering proxy
 
@@ -112,14 +113,40 @@ session encodes next.
 Opt-in via `--adaptive-bitrate` on `--lan-host`/`--p2p-host` (existing
 runs without it are completely unaffected).
 
-**Real-hardware result** (RTX 3070, 1920x1080@60, 25% FEC parity, 15%
-bursty loss, `--adaptive-bitrate`, 600 frames): the controller detected the
-loss and cut bitrate exactly once, `8Mbps -> 6.8Mbps` (the configured 0.85
-decrease factor), via a genuinely live `NvEncReconfigureEncoder` call mid-
-stream -- untested before this. Client result: `completed=599, decoded=599,
-presented=599`, zero dropped/skipped -- the encoder transition produced no
-visible glitch or decode corruption at all, not even at the exact frame
-where the bitrate changed.
+**Real-hardware result, loopback** (RTX 3070, 1920x1080@60, 25% FEC parity,
+15% bursty loss, `--adaptive-bitrate`, 600 frames): the controller detected
+the loss and cut bitrate exactly once, `8Mbps -> 6.8Mbps` (the configured
+0.85 decrease factor), via a genuinely live `NvEncReconfigureEncoder` call
+mid-stream -- untested before this. Client result: `completed=599,
+decoded=599, presented=599`, zero dropped/skipped -- the encoder transition
+produced no visible glitch or decode corruption at all, not even at the
+exact frame where the bitrate changed.
+
+**Real-hardware result, real two-machine network** (same settings, this
+RTX 3070 PC as host, a second PC over real home Wi-Fi as client,
+`tools/LossyProxy` relaying between them with 15% bursty loss injected):
+the controller reacted to genuinely real, changing conditions, not a single
+canned response -- **four live reconfigures** over one run,
+`8 -> 6.8 -> 5.78Mbps` (backing off twice as conditions stayed bad) then
+`6.07 -> 6.37Mbps` (recovering twice as they improved). Client result:
+`completed=597, decoded=597, presented=597` -- invariant holds exactly
+again -- `dropped-incomplete=3` (real loss FEC couldn't recover, a strong
+recovery ratio against 15% injected loss) and `skipped-for-reordering=3`,
+this time catching *genuine* real-network reordering rather than the
+proxy's simulated kind (no `--reorder-percent` was even set for this run).
+This is the whole Phase 1-4 stack -- LAN handshake, FEC, the reorder fix,
+latency probing, and adaptive bitrate -- proven working together over a
+real network for the first time.
+
+One real setup mistake worth recording: the proxy's first attempt at this
+bound to `--listen 127.0.0.1:<port>` (loopback-only, copied straight from
+the earlier loopback test) and every relay to the real client failed with
+"a socket operation was attempted to an unreachable network" -- a
+loopback-bound socket cannot route packets to a real LAN address at all.
+Fixed by binding `0.0.0.0` instead; the host still dials the proxy via
+`127.0.0.1` fine (a 0.0.0.0-bound socket accepts traffic addressed to any
+local IP), only the *outbound* leg to the real remote peer needed the
+wider bind.
 
 ## What's not done
 
@@ -132,6 +159,3 @@ where the bitrate changed.
 - **`CongestionController`'s AIMD constants (loss threshold, decrease/
   increase factors, clean-sample count) are untuned** -- chosen for
   plausibility, not measured against real perceptual quality/stutter.
-- Only tested on loopback so far (both host and client processes on this
-  machine, proxy in between) -- not yet combined with a real two-machine
-  network the way Phase 1/2 were.
