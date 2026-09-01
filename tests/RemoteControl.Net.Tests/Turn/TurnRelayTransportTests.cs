@@ -111,6 +111,48 @@ public class TurnRelayTransportTests
         Assert.Equal(Peer, relay.PeerEndpoint);
     }
 
+    [Fact]
+    public async Task Poll_ReportsFalse_WhenOnlyRelayHousekeepingIsWaiting()
+    {
+        // Regression test for a hang, not a tidiness issue. The LAN client's no-video timeout
+        // lives in its `if (!Poll(...))` branch, so a Poll that returns true for a Refresh reply
+        // sends it into ReceiveFrom, which skips the housekeeping and then blocks for media that
+        // is not coming. The client would hang forever at precisely the moment its timeout
+        // exists to report the stall.
+        using var server = new FakeTurnServer { RelayedEndpoint = new IPEndPoint(IPAddress.Parse("203.0.113.9"), 49155) };
+        server.Start();
+
+        // Zero interval: the next call sends a Refresh and a CreatePermission, so their replies
+        // are the only thing that will ever arrive -- no media at all.
+        using var relay = await ConnectRelayAsync(server, keepAliveInterval: TimeSpan.Zero);
+        relay.Send(Encoding.UTF8.GetBytes("this goes to a peer that never answers"));
+        await WaitForAsync(() => server.RefreshRequests >= 1);
+
+        Assert.False(relay.Poll(500_000), "housekeeping replies must not be reported as readable media.");
+    }
+
+    [Fact]
+    public async Task Poll_StillReportsMedia_ThatItHadToReadToIdentify()
+    {
+        // The other half of the same fix: Poll cannot un-read a datagram, so media it uncovers
+        // while skipping housekeeping has to be held for the Receive that follows rather than
+        // dropped.
+        using var server = new FakeTurnServer
+        {
+            RelayedEndpoint = new IPEndPoint(IPAddress.Parse("203.0.113.9"), 49155),
+            EchoRelayedTraffic = true,
+        };
+        server.Start();
+
+        using var relay = await ConnectRelayAsync(server, keepAliveInterval: TimeSpan.Zero);
+        var payload = Encoding.UTF8.GetBytes("media behind two housekeeping replies");
+        relay.Send(payload);
+
+        Assert.True(relay.Poll(5_000_000), "expected the echoed media to be found behind the housekeeping.");
+        var buffer = new byte[512];
+        Assert.Equal(payload, buffer[..relay.Receive(buffer)]);
+    }
+
     private static async Task<TurnRelayTransport> ConnectRelayAsync(
         FakeTurnServer server, TimeSpan? keepAliveInterval = null, IReadOnlyList<IPEndPoint>? permittedPeers = null)
     {

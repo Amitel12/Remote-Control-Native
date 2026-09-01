@@ -40,6 +40,9 @@ internal sealed class FakeTurnServer : IDisposable
     /// <summary>Echo Send indications back as Data indications, so a relayed datagram can be followed out and back.</summary>
     public bool EchoRelayedTraffic { get; init; }
 
+    /// <summary>Lifetime granted to an allocation. Short values let a test watch the keep-alive without waiting minutes.</summary>
+    public uint LifetimeSeconds { get; init; } = 600;
+
     public int AllocateRequests { get; private set; }
     public int RefreshRequests { get; private set; }
     public int PermissionRequests { get; private set; }
@@ -97,7 +100,7 @@ internal sealed class FakeTurnServer : IDisposable
                     TurnMethod.Allocate, StunClass.SuccessResponse, request.TransactionId,
                     [
                         TurnMessage.BuildXorAddress(TurnMessage.XorRelayedAddressAttribute, RelayedEndpoint),
-                        TurnMessage.BuildLifetime(600),
+                        TurnMessage.BuildLifetime(LifetimeSeconds),
                     ]);
 
             case TurnMethod.CreatePermission:
@@ -109,7 +112,7 @@ internal sealed class FakeTurnServer : IDisposable
             case TurnMethod.Refresh:
                 RefreshRequests++;
                 return TurnMessage.Build(
-                    TurnMethod.Refresh, StunClass.SuccessResponse, request.TransactionId, [TurnMessage.BuildLifetime(600)]);
+                    TurnMethod.Refresh, StunClass.SuccessResponse, request.TransactionId, [TurnMessage.BuildLifetime(LifetimeSeconds)]);
 
             case TurnMethod.Send when request.Class == StunClass.Indication:
                 SendIndications++;

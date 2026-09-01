@@ -260,9 +260,43 @@ public class SignaledPeerConnectorTests
         Assert.Equal((IPEndPoint)clientSocket.LocalEndPoint!, established[0].PeerEndpoint);
     }
 
-    private static async Task WaitForAsync(Func<bool> condition)
+    [Fact]
+    public async Task ConnectAsync_KeepsTheAllocationAlive_WhileWaitingForThePeer()
     {
-        for (var attempt = 0; attempt < 300 && !condition(); attempt++) await Task.Delay(10);
+        // The wait for a peer is deliberately unbounded -- it is waiting for a person. That
+        // outlives the allocation, and an expired one is not merely unused: its address is still
+        // advertised, so the fallback would later fail with Allocation Mismatch instead of
+        // connecting. A two-second lifetime makes that observable without a ten-minute test.
+        using var turnServer = new FakeTurnServer
+        {
+            RelayedEndpoint = new IPEndPoint(IPAddress.Parse("203.0.113.9"), 49155),
+            LifetimeSeconds = 2,
+        };
+        turnServer.Start();
+        var server = new FakeSignalingServer();
+        using var socket = BindLoopbackSocket();
+        var channel = server.CreateChannel();
+
+        var connect = new SignaledPeerConnector(channel, socket).ConnectAsync(
+            Role.Host, "ABC123",
+            turn: new TurnCredentials(turnServer.Endpoint, "app-user", "s3cret"),
+            punchTimeout: TimeSpan.FromMilliseconds(200),
+            localAddresses: LoopbackOnly);
+        await server.WaitForMemberCountAsync(1);
+
+        // No peer arrives for a few seconds -- long enough that a 2s allocation would be gone.
+        await WaitForAsync(() => turnServer.RefreshRequests >= 1, attempts: 500);
+        Assert.True(turnServer.RefreshRequests >= 1, "the allocation must be refreshed while the peer is still missing.");
+
+        server.DeliverTo(channel, new ServerMessage.StunCandidates([new CandidateInit(CandidateKind.Srflx, "127.0.0.1", 1)]));
+        var result = await connect;
+        using var transport = result.Transport;
+        Assert.True(result.ViaRelay);
+    }
+
+    private static async Task WaitForAsync(Func<bool> condition, int attempts = 300)
+    {
+        for (var attempt = 0; attempt < attempts && !condition(); attempt++) await Task.Delay(10);
     }
 
     private static Socket BindLoopbackSocket()

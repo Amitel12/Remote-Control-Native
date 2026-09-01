@@ -41,6 +41,9 @@ public sealed class TurnRelayTransport : IUdpTransport
     private readonly TimeSpan _keepAliveInterval;
     private readonly Stopwatch _sinceKeepAlive = Stopwatch.StartNew();
     private readonly byte[] _receiveBuffer = new byte[65535];
+    // Media that Poll had to read in order to find out it *was* media. Poll cannot un-read a
+    // datagram, so anything it uncovers waits here for the Receive that follows.
+    private readonly Queue<byte[]> _pendingPayloads = new();
 
     public TurnRelayTransport(
         IUdpTransport inner,
@@ -100,10 +103,12 @@ public sealed class TurnRelayTransport : IUdpTransport
 
     public int Receive(Span<byte> buffer)
     {
+        if (_pendingPayloads.Count > 0) return CopyOut(_pendingPayloads.Dequeue(), buffer);
+
         while (true)
         {
             var received = _inner.Receive(_receiveBuffer);
-            if (TryUnwrap(received, buffer, out var payloadLength)) return payloadLength;
+            if (TryExtractPayload(received, out var payload)) return CopyOut(payload!, buffer);
         }
     }
 
@@ -115,14 +120,37 @@ public sealed class TurnRelayTransport : IUdpTransport
     }
 
     /// <summary>
-    /// True when a *media* datagram is ready. Relay housekeeping shares this socket, so a
-    /// pending datagram is not necessarily something the caller wants: TURN responses are
-    /// consumed here rather than being handed up as if they were video.
+    /// True only when a *media* datagram is ready -- which means consuming relay housekeeping
+    /// here rather than reporting it as readable. Reporting it would be worse than untidy: the
+    /// caller's loop treats a true as "a datagram is waiting" and calls Receive, which would
+    /// then skip the housekeeping and block for media that may never come. The LAN client's
+    /// own no-video timeout lives in its `!Poll` branch, so it would never run -- a stalled
+    /// relay would hang the client instead of being reported, at exactly the moment the
+    /// timeout exists for.
     /// </summary>
     public bool Poll(int microsecondsTimeout)
     {
         MaintainAllocation();
-        return _inner.Poll(microsecondsTimeout);
+        if (_pendingPayloads.Count > 0) return true;
+
+        var deadline = Stopwatch.GetTimestamp() + (long)(microsecondsTimeout / 1_000_000.0 * Stopwatch.Frequency);
+        while (true)
+        {
+            var remainingTicks = deadline - Stopwatch.GetTimestamp();
+            var remaining = remainingTicks <= 0
+                ? 0
+                : (int)Math.Min(int.MaxValue, remainingTicks * 1_000_000L / Stopwatch.Frequency);
+
+            if (!_inner.Poll(remaining)) return false;
+
+            var received = _inner.Receive(_receiveBuffer);
+            if (TryExtractPayload(received, out var payload))
+            {
+                _pendingPayloads.Enqueue(payload!);
+                return true;
+            }
+            // Housekeeping consumed; keep looking within whatever budget is left.
+        }
     }
 
     /// <summary>
@@ -154,27 +182,29 @@ public sealed class TurnRelayTransport : IUdpTransport
         }
     }
 
-    private bool TryUnwrap(int receivedLength, Span<byte> buffer, out int payloadLength)
+    /// <summary>Separates media from relay housekeeping, absorbing the latter.</summary>
+    private bool TryExtractPayload(int receivedLength, out byte[]? payload)
     {
-        payloadLength = 0;
         var datagram = _receiveBuffer.AsSpan(0, receivedLength);
-
-        if (TurnClient.TryReadDataIndication(datagram, out _, out var payload) && payload is not null)
-        {
-            if (payload.Length > buffer.Length)
-            {
-                _logger.Warn($"Discarding a {payload.Length}-byte relayed datagram: the caller's buffer holds {buffer.Length}.");
-                return false;
-            }
-
-            payload.CopyTo(buffer);
-            payloadLength = payload.Length;
+        if (TurnClient.TryReadDataIndication(datagram, out _, out payload) && payload is not null)
             return true;
-        }
 
         // A Refresh/CreatePermission reply, or something else entirely -- either way not media.
         _client.TryHandleResponse(datagram);
         return false;
+    }
+
+    private int CopyOut(byte[] payload, Span<byte> buffer)
+    {
+        if (payload.Length > buffer.Length)
+        {
+            _logger.Warn($"Truncating a {payload.Length}-byte relayed datagram: the caller's buffer holds {buffer.Length}.");
+            payload.AsSpan(0, buffer.Length).CopyTo(buffer);
+            return buffer.Length;
+        }
+
+        payload.CopyTo(buffer);
+        return payload.Length;
     }
 
     public void Dispose() => _inner.Dispose();

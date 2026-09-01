@@ -72,6 +72,7 @@ public sealed class SignaledPeerConnector
     // an allocation to use -- it cannot be obtained after the punch fails, because the relayed
     // address has to be advertised in the same candidate exchange the peer already consumed.
     private TurnClient? _turnClient;
+    private uint _allocationLifetimeSeconds;
 
     public SignaledPeerConnector(ISignalingChannel channel, Socket socket, ILogger? logger = null)
     {
@@ -138,7 +139,27 @@ public sealed class SignaledPeerConnector
             // docs/PHASE-1.md's LAN handshake made ("wait indefinitely"), for the same
             // reason -- a timeout here just converts "they were slow" into a confusing
             // failure. Cancellation (Ctrl+C) is the way out.
-            var peer = await _peerCandidates.Task.WaitAsync(cancellationToken);
+            // That indefinite wait outlives the allocation: coturn grants ten minutes, and a peer
+            // that takes longer than that to start would leave us advertising a relayed address
+            // that no longer exists -- the fallback would then fail with Allocation Mismatch
+            // rather than connecting, which is a confusing way to discover the relay expired.
+            // So the allocation is kept alive for as long as the wait lasts.
+            IReadOnlyList<CandidateInit> peer;
+            using (var keepAlive = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+            {
+                var keepingAlive = KeepAllocationAliveAsync(keepAlive.Token);
+                try
+                {
+                    peer = await _peerCandidates.Task.WaitAsync(cancellationToken);
+                }
+                finally
+                {
+                    // Awaited, not just cancelled: a refresh in flight owns the socket, and the
+                    // punch that follows needs it to itself.
+                    keepAlive.Cancel();
+                    await keepingAlive;
+                }
+            }
             // Relay candidates are excluded from punching on purpose: a relayed address is the
             // TURN server, which will not answer a punch probe and does not need to -- it is
             // reached by relaying, below.
@@ -317,6 +338,7 @@ public sealed class SignaledPeerConnector
                 var client = new TurnClient(_socket, turn.Server, turn.Username, turn.Password, _logger);
                 var allocation = await client.AllocateAsync(cancellationToken);
                 _turnClient = client;
+                _allocationLifetimeSeconds = allocation.LifetimeSeconds;
                 candidates.Add(new CandidateInit(CandidateKind.Relay, allocation.RelayedEndpoint.Address.ToString(), allocation.RelayedEndpoint.Port));
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
@@ -331,6 +353,36 @@ public sealed class SignaledPeerConnector
             throw new InvalidOperationException("No local candidates to advertise: no usable IPv4 address and no STUN result.");
 
         return candidates;
+    }
+
+    /// <summary>
+    /// Refreshes the allocation for as long as we are waiting on the peer. Runs at half the
+    /// granted lifetime, so a single lost refresh still leaves a full interval to recover in.
+    /// Failures are logged rather than thrown: the direct path may still work, and a relay that
+    /// has expired will announce itself clearly enough when the fallback tries to use it.
+    /// </summary>
+    private async Task KeepAllocationAliveAsync(CancellationToken cancellationToken)
+    {
+        if (_turnClient is null || _allocationLifetimeSeconds == 0) return;
+
+        var interval = TimeSpan.FromSeconds(Math.Max(1, _allocationLifetimeSeconds / 2.0));
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                await Task.Delay(interval, cancellationToken);
+                var granted = await _turnClient.RefreshAsync(cancellationToken: cancellationToken);
+                _logger.Info($"TURN allocation refreshed while waiting for the peer ({granted}s).");
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // The peer arrived, or the caller gave up. Either way this is done.
+        }
+        catch (Exception ex)
+        {
+            _logger.Warn($"Keeping the TURN allocation alive failed: {ex.Message}");
+        }
     }
 
     /// <summary>
