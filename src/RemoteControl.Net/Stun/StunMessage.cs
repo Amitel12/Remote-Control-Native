@@ -85,7 +85,7 @@ public static class StunMessage
 
             if (attrType == wantedType)
             {
-                var endpoint = ParseAddressValue(attributes.Slice(valueStart, attrLength), transactionId, xor);
+                var endpoint = TryParseAddressValue(attributes.Slice(valueStart, attrLength), transactionId, xor);
                 if (endpoint is not null) return endpoint;
             }
 
@@ -96,7 +96,12 @@ public static class StunMessage
         return null;
     }
 
-    private static IPEndPoint? ParseAddressValue(ReadOnlySpan<byte> value, ReadOnlySpan<byte> transactionId, bool xor)
+    /// <summary>
+    /// Decodes a MAPPED-ADDRESS-shaped attribute value. Internal rather than private because
+    /// TURN's XOR-RELAYED-ADDRESS and XOR-PEER-ADDRESS use this exact encoding -- see
+    /// RemoteControl.Net.Turn.TurnMessage, which reuses this rather than duplicating the XOR.
+    /// </summary>
+    internal static IPEndPoint? TryParseAddressValue(ReadOnlySpan<byte> value, ReadOnlySpan<byte> transactionId, bool xor)
     {
         if (value.Length < 4) return null;
         var family = value[1];
