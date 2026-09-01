@@ -42,6 +42,12 @@ public sealed class SignaledPeerConnector
     private readonly TaskCompletionSource _registered = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TaskCompletionSource<IReadOnlyList<CandidateInit>> _peerCandidates =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
+    // Every write to the channel goes through this. Completing _localCandidates releases the
+    // peer-joined re-send onto the thread pool, and the very next statement starts the initial
+    // send -- two sends in flight at once on a transport that allows one. A real ClientWebSocket
+    // throws InvalidOperationException on the second, and if the re-send got there first it is
+    // the *initial* send that throws, failing an exchange that was otherwise fine.
+    private readonly SemaphoreSlim _sendGate = new(1, 1);
 
     public SignaledPeerConnector(ISignalingChannel channel, Socket socket, ILogger? logger = null)
     {
@@ -84,7 +90,7 @@ public sealed class SignaledPeerConnector
         try
         {
             await _channel.ConnectAsync(cancellationToken);
-            await _channel.SendAsync(new ClientMessage.Register(role, pairingCode), cancellationToken);
+            await SendAsync(new ClientMessage.Register(role, pairingCode), cancellationToken);
             var registrationBudget = registrationTimeout ?? TimeSpan.FromSeconds(30);
             try
             {
@@ -117,7 +123,7 @@ public sealed class SignaledPeerConnector
             // we do not wait for theirs before starting, since both sides reach this point
             // within a round trip of each other and gating on it would add a deadlock for
             // no benefit.
-            await _channel.SendAsync(new ClientMessage.HolePunchReady(), cancellationToken);
+            await SendAsync(new ClientMessage.HolePunchReady(), cancellationToken);
 
             var timeout = punchTimeout ?? TimeSpan.FromSeconds(30);
             _logger.Info($"Punching toward {string.Join(", ", peerEndpoints)} (up to {timeout.TotalSeconds:0}s).");
@@ -221,7 +227,26 @@ public sealed class SignaledPeerConnector
     private Task SendCandidatesAsync(IReadOnlyList<CandidateInit> candidates, CancellationToken cancellationToken)
     {
         _logger.Info($"Advertising candidates: {string.Join(", ", candidates.Select(Describe))}.");
-        return _channel.SendAsync(new ClientMessage.StunCandidates(candidates), cancellationToken);
+        return SendAsync(new ClientMessage.StunCandidates(candidates), cancellationToken);
+    }
+
+    /// <summary>
+    /// One send at a time, no matter which of the connector's paths it comes from -- see
+    /// <see cref="_sendGate"/>. Deliberately not left to the channel: a WebSocket permitting
+    /// one outstanding send is the common case, not a quirk, so the caller not overlapping its
+    /// own writes is the safer contract.
+    /// </summary>
+    private async Task SendAsync(ClientMessage message, CancellationToken cancellationToken)
+    {
+        await _sendGate.WaitAsync(cancellationToken);
+        try
+        {
+            await _channel.SendAsync(message, cancellationToken);
+        }
+        finally
+        {
+            _sendGate.Release();
+        }
     }
 
     private async Task<IReadOnlyList<CandidateInit>> GatherCandidatesAsync(

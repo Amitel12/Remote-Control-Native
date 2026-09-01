@@ -135,6 +135,32 @@ public class SignaledPeerConnectorTests
         Assert.Contains("no usable IPv4 candidates", failure.Message);
     }
 
+    [Fact]
+    public async Task ConnectAsync_NeverOverlapsSends_WhenPeerJoinArrivesAroundTheInitialSend()
+    {
+        // Regression test for a real defect: completing the local-candidates source releases the
+        // parked peer-joined re-send onto the thread pool, and the statement right after it began
+        // the initial send -- two sends in flight on a transport that allows one. The earlier
+        // fake completed sends instantly and so could never catch it; this one holds each send
+        // open long enough for an overlap to be observable, which is what a real WebSocket does.
+        var server = new FakeSignalingServer { SendDuration = TimeSpan.FromMilliseconds(150) };
+        using var socket = BindLoopbackSocket();
+        var channel = server.CreateChannel();
+
+        var connect = new SignaledPeerConnector(channel, socket).ConnectAsync(
+            Role.Host, "ABC123", punchTimeout: TimeSpan.FromMilliseconds(200), localAddresses: LoopbackOnly);
+        await server.WaitForMemberCountAsync(1);
+
+        // peer-joined lands around the initial send (triggering the re-send), and the candidates
+        // that follow push the connector straight into its hole-punch-ready send -- three writes
+        // with every opportunity to overlap.
+        server.DeliverTo(channel, new ServerMessage.PeerJoined());
+        server.DeliverTo(channel, new ServerMessage.StunCandidates([new CandidateInit(CandidateKind.Srflx, "127.0.0.1", 1)]));
+
+        await Assert.ThrowsAsync<TimeoutException>(() => connect);
+        Assert.False(server.SawConcurrentSend, "The connector issued two sends at once; a real ClientWebSocket would have thrown.");
+    }
+
     private static Socket BindLoopbackSocket()
     {
         var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
@@ -155,6 +181,21 @@ public class SignaledPeerConnectorTests
         private readonly object _gate = new();
 
         public ServerMessage? RejectRegistrationWith { get; init; }
+
+        /// <summary>
+        /// How long a send stays in flight. A real WebSocket send is not instant; leaving it at
+        /// zero is what let the first version of these tests miss a genuine overlapping-send bug.
+        /// </summary>
+        public TimeSpan SendDuration { get; init; } = TimeSpan.Zero;
+
+        /// <summary>
+        /// Set if any channel ever had two sends in flight at once. A real
+        /// <c>ClientWebSocket</c> allows exactly one and throws on the second, so this is a
+        /// defect in the caller, not a tolerable race.
+        /// </summary>
+        public bool SawConcurrentSend { get; private set; }
+
+        private void NoteConcurrentSend() => SawConcurrentSend = true;
 
         public ISignalingChannel CreateChannel() => new FakeChannel(this);
 
@@ -223,6 +264,7 @@ public class SignaledPeerConnectorTests
             private readonly FakeSignalingServer _server;
             private readonly object _queueGate = new();
             private Task _delivery = Task.CompletedTask;
+            private int _inFlightSends;
 
             public FakeChannel(FakeSignalingServer server) => _server = server;
 
@@ -231,10 +273,20 @@ public class SignaledPeerConnectorTests
 
             public Task ConnectAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
 
-            public Task SendAsync(ClientMessage message, CancellationToken cancellationToken = default)
+            public async Task SendAsync(ClientMessage message, CancellationToken cancellationToken = default)
             {
-                _server.OnSent(this, message);
-                return Task.CompletedTask;
+                if (Interlocked.Increment(ref _inFlightSends) > 1)
+                    _server.NoteConcurrentSend();
+                try
+                {
+                    if (_server.SendDuration > TimeSpan.Zero)
+                        await Task.Delay(_server.SendDuration, cancellationToken);
+                    _server.OnSent(this, message);
+                }
+                finally
+                {
+                    Interlocked.Decrement(ref _inFlightSends);
+                }
             }
 
             /// <summary>

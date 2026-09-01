@@ -203,6 +203,21 @@ Two details that are easy to get wrong, both settled in
   to the prober's own machine, which is useless at best and a false "path is
   open" at worst.
 
+**A real bug the first version of these tests could not catch.** Completing
+the local-candidates source releases the parked `peer-joined` re-send onto
+the thread pool, and the statement immediately after it began the initial
+send -- two sends in flight at once on a `ClientWebSocket`, which permits
+exactly one and throws `InvalidOperationException` on the second. If the
+re-send won the race it was the *initial* send that threw, aborting an
+otherwise fine exchange. The original fake channel completed sends
+instantly, so no overlap was ever observable in a test. Fixed by serializing
+writes in both places that can know about the constraint: the connector no
+longer overlaps its own sends, and `SignalingClient` serializes socket
+writes for any other caller. The fake now holds each send open for a
+measurable interval and fails the test if two are ever in flight -- the same
+lesson as the reorder bug in `docs/PHASE-4.md`, that a test whose fake is
+faster than reality cannot see a race.
+
 **What this is verified against**: an in-process fake of the server's relay
 logic plus real UDP sockets doing a real punch over loopback
 (`SignaledPeerConnectorTests`) -- both registration orders, a rejected

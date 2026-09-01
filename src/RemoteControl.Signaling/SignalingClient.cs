@@ -22,6 +22,11 @@ namespace RemoteControl.Signaling;
 public sealed class SignalingClient : ISignalingChannel, IAsyncDisposable
 {
     private readonly ClientWebSocket _socket = new();
+    // ClientWebSocket allows exactly one outstanding SendAsync and throws
+    // InvalidOperationException on a second -- and this class is the one that knows that,
+    // so it serializes rather than making every caller do it. SignaledPeerConnector also
+    // avoids overlapping its own sends; this covers anyone who doesn't.
+    private readonly SemaphoreSlim _sendGate = new(1, 1);
     private readonly ILogger _logger;
     private readonly Uri _serverUri;
     private CancellationTokenSource? _receiveLoopCts;
@@ -46,11 +51,19 @@ public sealed class SignalingClient : ISignalingChannel, IAsyncDisposable
     public Task RegisterAsync(Role role, string pairingCode, CancellationToken cancellationToken = default) =>
         SendAsync(new ClientMessage.Register(role, pairingCode), cancellationToken);
 
-    public Task SendAsync(ClientMessage message, CancellationToken cancellationToken = default)
+    public async Task SendAsync(ClientMessage message, CancellationToken cancellationToken = default)
     {
         var json = JsonSerializer.Serialize(message, ProtocolJson.Options);
         var bytes = Encoding.UTF8.GetBytes(json);
-        return _socket.SendAsync(bytes, WebSocketMessageType.Text, endOfMessage: true, cancellationToken);
+        await _sendGate.WaitAsync(cancellationToken);
+        try
+        {
+            await _socket.SendAsync(bytes, WebSocketMessageType.Text, endOfMessage: true, cancellationToken);
+        }
+        finally
+        {
+            _sendGate.Release();
+        }
     }
 
     private async Task RunReceiveLoopAsync(CancellationToken cancellationToken)
@@ -118,5 +131,6 @@ public sealed class SignalingClient : ISignalingChannel, IAsyncDisposable
         }
         _socket.Dispose();
         _receiveLoopCts?.Dispose();
+        _sendGate.Dispose();
     }
 }
