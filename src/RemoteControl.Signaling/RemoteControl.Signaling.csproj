@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\RemoteControl.Protocol\RemoteControl.Protocol.csproj" />
+    <ProjectReference Include="..\RemoteControl.Net\RemoteControl.Net.csproj" />
     <ProjectReference Include="..\RemoteControl.Common\RemoteControl.Common.csproj" />
   </ItemGroup>
 

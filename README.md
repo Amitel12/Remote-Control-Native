@@ -17,30 +17,47 @@ this app speaks.
 
 ## Status
 
-Not feature-complete. Phase 0's GPU pipeline is proven on the RTX 3070 / Windows
-11 test machine, and Phase 1 has begun with a proven two-process localhost UDP
-stream. What's implemented now:
+Not feature-complete. Phases 0-4 are implemented and verified on real
+hardware (RTX 3070 / Windows 11 host plus a second Windows PC): GPU-resident
+capture, native NVENC encode, D3D11 decode and presentation, a custom UDP
+transport with Reed-Solomon FEC, UDP hole-punched P2P across genuinely
+different networks, remote mouse/keyboard, and loss-driven adaptive bitrate.
+What's implemented now:
 
 - **`RemoteControl.Protocol`** -- the wire message types (both the JSON
-  signaling messages and the binary UDP hot-path structs). 19 tests.
+  signaling messages and the binary UDP hot-path structs).
 - **`RemoteControl.Net`** -- Reed-Solomon FEC over GF(256) (the single
   highest-risk piece in the whole rewrite -- see the risk register),
   video packetizer/depacketizer, STUN client (RFC 5389, verified against
-  a real RFC 5769 reference vector), jitter-buffer frame pacer, and
-  LAN-session framing. Its 48 tests include exhaustive K-of-N FEC
-  reconstruction and a real UDP loopback STUN round trip.
+  a real RFC 5769 reference vector), UDP hole-punch coordinator, AIMD
+  congestion controller, jitter-buffer frame pacer, and LAN-session
+  framing. Its tests include exhaustive K-of-N FEC reconstruction and a
+  real UDP loopback STUN round trip.
 - **`RemoteControl.Signaling`** -- WebSocket client speaking the updated
   signaling protocol against `amitel12/tests`'s (unchanged) signaling
-  server.
+  server, driven by `RemoteControl.Net.Peering.SignaledPeerConnector` to
+  exchange candidates and hole-punch automatically. Verified against an
+  in-process fake of the server plus a real loopback punch; no server is
+  deployed yet, so it has not run against the real one.
 - **`RemoteControl.Capture` / `Codec` / `Render`** -- real D3D11 Desktop
-  Duplication, native NVIDIA NVENC, D3D11-backed H.264 decode, and swap-chain
-  presentation, including display-mode and Win+L recovery.
-- **`tools/LoopbackHarness`** -- Phase 0 loopback plus Phase 1 LAN host/client
-  modes. A 300-frame localhost run passed 300/300 end to end with no incomplete
-  frames; see [`docs/PHASE-1.md`](docs/PHASE-1.md).
+  Duplication, native NVIDIA NVENC (including live bitrate reconfigure and
+  optional continuous intra-refresh), D3D11-backed H.264 decode, and
+  swap-chain presentation, including display-mode and Win+L recovery.
+- **`RemoteControl.Input`** -- `SendInput` injection and raw-input capture,
+  with the DPI/coordinate, Unicode-typing and stuck-button lessons from the
+  Electron app baked in, plus held-state resync and redundant send for
+  lossy links.
+- **`tools/LoopbackHarness`** -- every mode the above has been proven
+  through: Phase 0 loopback, LAN host/client, P2P host/client, and the
+  input demos. **`tools/LossyProxy`** -- a real impairing UDP relay (bursty
+  loss, reordering, jitter) used to validate FEC and the decode path.
 
-`RemoteControl.Input` and the WPF application remain scaffolds. The real
-two-machine LAN run and latency baseline are the next gate.
+Standing between this and a usable app: a deployed signaling server to run
+the now-automated candidate exchange against, and TURN relay fallback (a
+real restrictive NAT has been found where direct punching cannot succeed --
+see `docs/PHASE-2.md`). `RemoteControl.App` (WPF) is still a placeholder;
+nothing above runs through it yet. See `docs/ARCHITECTURE.md`'s "Next step"
+for the full ordered list.
 
 ## Building
 
@@ -51,7 +68,7 @@ cross-platform even just for compiling. Every other project targets
 Windows API surface ships as reference assemblies), it just can't *run*
 off Windows.
 
-On Windows, this builds all 12 projects and runs the tests:
+On Windows, this builds all 13 projects and runs the tests:
 
 ```
 dotnet build RemoteControl.sln
@@ -81,8 +98,9 @@ lands under an `x64` path rather than the default one:
 `dotnet run --project src\RemoteControl.App` needs the platform passed
 explicitly to match, i.e. `-p:Platform=x64`.
 
-The WPF shell is still a placeholder. Run the proven pipeline and LAN modes
-through `tools/LoopbackHarness`; see `docs/PHASE-0.md` and `docs/PHASE-1.md`.
+The WPF shell is still a placeholder. Run the proven pipeline, LAN and P2P
+modes through `tools/LoopbackHarness`; see `docs/PHASE-0.md` through
+`docs/PHASE-4.md`.
 
 ## Gotchas
 

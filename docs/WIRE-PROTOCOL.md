@@ -38,6 +38,26 @@ This is what replaced the old SDP-offer/SDP-answer/ICE-candidate exchange
 -- the signaling server's own relay logic (`rooms.ts`) never needed to
 change, only these payload shapes and `server.ts`'s one `switch` case.
 
+**Exchange order.** The server relays to whoever is in the room *at that
+moment* and never replays, which decides the sequence
+`RemoteControl.Net.Peering.SignaledPeerConnector` follows:
+
+1. `register`, then wait for `registered`.
+2. Gather candidates (host addresses, plus the server-reflexive one if a
+   STUN server is configured) and send `stun-candidates`.
+3. **On `peer-joined`, send `stun-candidates` again.** This is not
+   belt-and-braces: the peer that registers *first* sends its candidates
+   into an empty room, so without the re-send the second peer never learns
+   them and both sides wait forever. `peer-joined` is the only signal the
+   first peer gets that anyone is now listening.
+4. On the peer's `stun-candidates`, send `hole-punch-ready` and start
+   punching. The peer's own `hole-punch-ready` is informational -- both
+   sides reach this point within a round trip of each other, so gating on
+   it would only add a way to deadlock.
+
+Re-sent candidates are ordinary duplicates; a receiver acts on the first
+set it sees and ignores later ones.
+
 ## 2. Media/input transport (binary, custom UDP -- not this protocol's job to describe the transport itself, only its payloads)
 
 Rides ENet-CSharp channels once the peer connection (direct P2P via

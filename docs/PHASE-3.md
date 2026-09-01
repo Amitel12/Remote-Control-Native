@@ -254,15 +254,19 @@ separate runs (69.2-71.5% without, 89.4-91.9% with).
   above) but used a synthetic off-screen window to steal focus, not a real
   physical alt-tab keystroke or a real fast-overshoot drag past the window
   edge; worth a manual pass with real hardware input specifically.
-- **Neither reliability fix (InputStateSync or redundant-send) has been
-  re-verified on a real lossy two-machine run yet** -- `--input-reconcile-demo`
-  and `--input-reliability-demo` both prove their respective mechanisms
-  correct in isolation (real sockets/real OS state, but loopback and
-  synthetic loss), not the full loop (real capture -> real drop -> real fix
-  -> real host, over an actual network) since either fix landed. Given that
-  the *first* attempt at redundant-send had a real bug only caught by
-  actually measuring the outcome, isolated-mechanism testing is good but
-  not a substitute for that same kind of measurement on a real network.
+- **Both reliability fixes have since run on a real lossy network, but
+  without a controlled measurement.** A real cellular P2P session
+  (`docs/PHASE-2.md`, "Real asymmetric-punch bug found and fixed") carried
+  1196 real input events over ~100s with 606 correctly identified as
+  redundant copies and deduped -- the first confirmation that
+  `InputStateSync`/`ReconcileHeldState` and the redundant-send/
+  `InputSequenceDedup` pair survive genuine internet jitter and loss, not
+  just `--drop-input-percent` and `LossyProxy`. What that run did *not*
+  produce is a number: nothing measured character-recovery rate on the real
+  link the way the 40-trial loopback measurement did, so "it worked" is the
+  claim, not "it recovered N%". Worth capturing on the next real run, given
+  that the first attempt at redundant-send had a real bug caught only by
+  measuring the outcome rather than by watching it appear to work.
 - Redundant send only *reduces* loss (`p -> p^2`), it doesn't eliminate it
   -- at high enough loss (the 50% test rate that first surfaced this
   problem, not realistic conditions) some garbling will still occur. A
