@@ -256,16 +256,29 @@ Ordered so the two highest-risk unknowns surface first, not last.
    (home Ethernet) and a second PC tethered to mobile data (genuinely
    different networks/NATs) connected directly in 68ms with no relay, then
    streamed 300 real frames through the punched socket -- see
-   `docs/PHASE-2.md`. Candidate exchange is still manual (copy/paste) rather
-   than automated -- `SignalingClient` (already implemented) speaks the
+   `docs/PHASE-2.md`. Two further networks have been tested since. On a third
+   network (a different carrier's phone hotspot) the punch exposed a real
+   bug -- each side stopped sending probes the moment its *own* receive
+   succeeded, starving a peer whose NAT needed several more seconds of
+   inbound probes to finish opening; fixed by sending for the full timeout
+   budget regardless, after which the punch succeeded and both video and
+   remote input streamed over real cellular. On a fourth (a residential
+   network at a relative's house) a clean attempt with byte-matched
+   candidates and ~25s of genuine window overlap **still timed out** -- the
+   restrictive-NAT case, confirmed for real rather than hypothetically.
+   Candidate exchange is still manual (copy/paste) rather than automated --
+   `SignalingClient` (already implemented) speaks the
    `register`/`stun-candidates`/`hole-punch-ready` protocol, but nothing
    wires it to `HolePunchCoordinator` yet, since no signaling server is
-   currently deployed to test against. TURN relay fallback (for a genuinely
-   restrictive/symmetric-NAT network, which this test's NAT happened not to
-   be) also remains unimplemented. **Milestone**: two machines on genuinely
-   different home networks connect and stream direct/STUN -- met. A
-   restrictive-network test confirming TURN carries the protocol
-   end-to-end -- still open.
+   currently deployed to test against; that manual exchange has now cost
+   several failed test attempts on its own (stale candidates after a
+   restart, transcription typos, `dotnet run` build time eating the punch
+   window). TURN relay fallback remains unimplemented. **Milestone**: two
+   machines on genuinely different home networks connect and stream
+   direct/STUN -- met. A restrictive-network test confirming TURN carries
+   the protocol end-to-end -- still open, and no longer optional: a real
+   network has now been found where direct punching genuinely cannot
+   succeed.
 4. **Phase 3 -- Input capture + injection, lessons baked in. Both halves
    implemented and real-hardware verified.** `InputInjector` (`SendInput`,
    lessons #1/#2 baked in) and `RawInputCapture` (window subclassing,
@@ -277,10 +290,19 @@ Ordered so the two highest-risk unknowns surface first, not last.
    mid-drag correctly synthesizing the missing button-release, all
    confirmed on real hardware; see `docs/PHASE-3.md`.
    `RemoteControl.Protocol.InputEvent`/`InputEventCodec` (already
-   implemented and tested) are the wire format they produce/consume. No
-   real end-to-end loop wires capture -> network -> inject across two
-   machines yet -- that integration and the actual ENet input channels
-   remain. Explicit regression checks required before moving on -- **none of these
+   implemented and tested) are the wire format they produce/consume. The
+   end-to-end loop is now wired and real-hardware verified too: capture ->
+   `LanDatagramKind.Input` over the existing UDP socket -> injection,
+   opt-in via `--remote-input`, with matching sent/received counts on a real
+   two-machine run. Best-effort UDP surfaced two real reliability gaps,
+   both fixed and verified: lost releases leaving a stuck button/key
+   (`InputStateSync` + `ReconcileHeldState`, a periodic held-state resync)
+   and silently dropped typed characters (redundant send plus
+   `InputSequenceDedup`, measured ~70% -> ~90% character recovery at 30%
+   loss). Both then survived a real cellular P2P session -- 1196 input
+   events, 606 correctly deduped. ENet input channels are still not used;
+   the same "defer until genuinely needed" call as the video channel.
+   Explicit regression checks required before moving on -- **none of these
    three have been run yet**: (a) click/drag accuracy at screen edges on
    125%/150% DPI scaling, (b) typing English text with *both* an English and
    a non-English host layout, (c) fast drag overshoot + alt-tab mid-drag
@@ -309,12 +331,32 @@ Ordered so the two highest-risk unknowns surface first, not last.
    zero decode corruption at any transition. See `docs/PHASE-4.md` for
    both results. Bandwidth capping/shaping itself isn't tested at all
    yet -- only the loss-driven half of "adaptive bitrate" is proven.
+   A later latency pass, prompted by a real cellular P2P session that
+   streamed fine by the counters but looked laggy to a viewer, added five
+   more adaptations (`docs/PHASE-4.md`, "The latency-improvement list"):
+   skipping the *presentation* of backlogged stale frames while still
+   decoding them, adaptive FEC (`--adaptive-fec`, parity scaled off measured
+   loss instead of a fixed ratio), continuous intra-refresh
+   (`--intra-refresh`, no periodic IDR bitrate spike), an adaptive reorder
+   window, and a TCP-`ssthresh`-shaped soft ceiling stopping the congestion
+   controller from repeatedly climbing back to a bitrate that just failed.
+   Four of those five were designed by inference from logs and have not yet
+   been run on a real link; the fifth is an input-to-present latency
+   measurement added specifically to give the others a number to be judged
+   against.
    **Milestone**:
    watchable stream under injected 1-5% loss and constrained bandwidth,
    measured against the Phase 1 baseline -- loss/reordering half met, on
    both loopback and a real two-machine network; bandwidth-constrained half
    not attempted.
-6. **Phase 5 -- Feature parity pass.** Multi-monitor swap; input
+6. **Phase 5 -- Feature parity pass.** Starts with a structural debt worth
+   naming: nearly all session logic built in Phases 1-4 lives in
+   `tools/LoopbackHarness` (`LanClientVideoSession` is a private nested
+   class in one 900-line file), not in `src/`. That was the right call while
+   the harness was the only consumer, but `RemoteControl.App` cannot reuse
+   any of it and neither can the unit tests -- so lifting the session layer
+   into a real library is the prerequisite for everything below, not a
+   cleanup to do afterwards. Multi-monitor swap; input
    arbitration (C# low-level hooks *do* reliably expose
    `LLMHF_INJECTED`/`LLKHF_INJECTED`, a real improvement over the
    Electron app's `uiohook-napi` fingerprint-matching workaround); host
@@ -359,19 +401,23 @@ Ordered so the two highest-risk unknowns surface first, not last.
    exhaustive C(N,K)-combination testing (every possible K-of-N loss
    pattern reconstructs correctly, not just one convenient case) plus a
    real external reference vector for the STUN half of the transport
-   work. What's *not* yet tested: real network jitter/loss patterns
-   (bursty loss, reordering at real-world scale, actual UDP MTU behavior)
-   versus a unit test's synthetic `Random`-driven loss -- that's Phase 4's
-   remaining work.
+   work. **Since resolved**: `tools/LossyProxy` put the FEC path under real
+   bursty loss, real reordering and real jitter, and the codec itself held
+   -- what broke was decode *ordering* around it (see Phase 4 above), not
+   the erasure coding. Parity is now scaled off measured loss rather than
+   fixed (`--adaptive-fec`). Genuine constrained-bandwidth behaviour is the
+   one impairment still not exercised.
 3. **Hand-rolled STUN + hole-punching (Phase 2). Partially de-risked.**
    The STUN message codec itself is solid (RFC 5769 reference vector,
-   real UDP loopback round trip). What's unverified: real-world NAT
-   behavior is genuinely varied (full-cone/restricted-cone/
-   port-restricted/symmetric), and "works on the networks I tested" is a
-   weaker guarantee than for the codec pipeline -- `HolePunchCoordinator`
-   itself doesn't exist yet, and TURN fallback bounds the downside but
-   validating a real P2P success rate needs testing across more than one
-   home network.
+   real UDP loopback round trip). `HolePunchCoordinator` now exists and has
+   been tested across four real networks -- and the varied-NAT concern
+   proved entirely justified: it succeeded on two (68ms and ~9s), needed a
+   real bug fixed to work on a third (one side stopping its probes too
+   early), and **failed outright on a fourth** despite a clean attempt.
+   That last one is the case TURN exists for, and TURN is still
+   unimplemented, so today this risk is bounded by nothing at all on a
+   restrictive network. `CandidateKind.Host`/`Relay` are both still
+   unwired.
 4. **Solo-scope reality check.** Sunshine represents years of accumulated
    tuning compressed here into a handful of phases. Treat Phase 0 and
    Phase 2 as genuine checkpoints where "this is taking much longer than
@@ -403,10 +449,43 @@ real hardware" become an excuse to skip testing the parts that don't.
 
 ## Next step
 
-Phase 1's two-process localhost wiring is complete. Next, run the LAN host and
-client on two Windows PCs, add latency instrumentation, and establish the wired
-LAN glass-to-glass baseline. Phase 0's correctness, throughput, hardware-engine
-use, driver-visible GPU residency, display-mode recovery, and secure-desktop
-recovery gates are answered. Keep native NVENC as the NVIDIA encode path; the
-failed Media Foundation vendor encoder and PIX investigations are closed.
+Phases 0-4 are landed and real-hardware verified; the open work is in this
+order.
+
+1. **Verify the Phase 4 latency pass on a real link.** Four of its five
+   changes are inferred from logs rather than measured. One real
+   two-machine run (ideally the cellular P2P condition they were written
+   for) recording input-to-present with each flag off and on turns them
+   from plausible into justified -- or finds that one of them doesn't help.
+2. **Automate signaling candidate exchange.** `SignalingClient` and
+   `HolePunchCoordinator` both exist but nothing connects them, so every
+   P2P test is a manual copy/paste of candidates -- which has now caused
+   several failed attempts on its own (stale candidates after a restart,
+   transcription typos, `dotnet run` build time eating the punch window).
+   Wiring `register` -> `peer-joined` -> `stun-candidates` ->
+   `hole-punch-ready` through to the punch makes every later NAT test
+   cheaper, which is why it comes before the TURN work it will be used to
+   test.
+3. **Implement TURN relay fallback.** A real residential network has now
+   been found where direct hole-punching genuinely cannot succeed
+   (`docs/PHASE-2.md`), so this is a requirement, not a nice-to-have. The
+   coturn deployment already exists and is payload-agnostic;
+   `CandidateKind.Relay` exists but nothing allocates or uses it. Host
+   candidates (both peers on one LAN) are unwired for the same reason.
+4. **Close out Phase 4's bandwidth half.** `tools/LossyProxy` shapes loss,
+   reordering and jitter but has no bandwidth cap, so the "constrained
+   bandwidth" half of the milestone is untested and the AIMD constants stay
+   untuned guesses.
+5. **Run Phase 3's three regression checks** (DPI-scaled edge accuracy,
+   non-English host layout, real alt-tab mid-drag) -- all still unrun.
+6. **Then Phase 5**, which starts by lifting the session layer out of
+   `tools/LoopbackHarness` into `src/` (see the Phase 5 entry above -- today
+   `RemoteControl.App` can reuse none of what Phases 1-4 built) and defining
+   the reliable control-channel message shapes still marked TODO in
+   `docs/WIRE-PROTOCOL.md`.
+
+Phase 0's correctness, throughput, hardware-engine use, driver-visible GPU
+residency, display-mode recovery, and secure-desktop recovery gates are all
+answered. Keep native NVENC as the NVIDIA encode path; the failed Media
+Foundation vendor encoder and PIX investigations are closed.
 Fullscreen-exclusive and driver-reset recovery remain useful soak coverage.
