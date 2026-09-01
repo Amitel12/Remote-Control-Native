@@ -158,6 +158,56 @@ public sealed class TurnClient
     }
 
     /// <summary>
+    /// Builds an authenticated request without sending or awaiting it. Needed once media is
+    /// flowing: the socket then belongs to the transport's own receive loop, so the
+    /// send-and-wait-for-my-transaction shape used during setup would steal video datagrams
+    /// out from under it. Callers hand the response back through
+    /// <see cref="TryHandleResponse"/> instead.
+    /// </summary>
+    public byte[] BuildAuthenticatedRequest(TurnMethod method, IReadOnlyList<byte[]> attributes)
+    {
+        if (_key is null || _realm is null || _nonce is null)
+            throw new InvalidOperationException("Authenticated TURN requests need a completed Allocate first.");
+
+        var all = new List<byte[]>(attributes)
+        {
+            TurnMessage.BuildStringAttribute(TurnMessage.UsernameAttribute, _username),
+            TurnMessage.BuildStringAttribute(TurnMessage.RealmAttribute, _realm),
+            TurnMessage.BuildStringAttribute(TurnMessage.NonceAttribute, _nonce),
+        };
+
+        return TurnMessage.Build(method, StunClass.Request, TurnMessage.NewTransactionId(), all, _key);
+    }
+
+    /// <summary>
+    /// Consumes a datagram that is a response to one of this client's own requests, returning
+    /// true if it was one (and is therefore not media). A rotated nonce is absorbed here so the
+    /// next periodic request carries it; anything else that failed is logged rather than thrown,
+    /// because by this point a throw would tear down a live stream over a refresh that will be
+    /// retried in seconds anyway.
+    /// </summary>
+    public bool TryHandleResponse(ReadOnlySpan<byte> datagram)
+    {
+        if (!TurnMessage.TryParse(datagram, out var message)) return false;
+        if (message.Class is not (StunClass.SuccessResponse or StunClass.ErrorResponse)) return false;
+        if (message.Method is not (TurnMethod.Refresh or TurnMethod.CreatePermission or TurnMethod.Allocate)) return false;
+
+        if (message.ErrorCode == 438 && message.Nonce is not null)
+        {
+            _nonce = message.Nonce;
+            if (message.Realm is not null) _realm = message.Realm;
+            _key = TurnMessage.LongTermKey(_username, _realm!, _password);
+            _logger.Info("TURN server rotated its nonce mid-session -- the next refresh will carry the new one.");
+        }
+        else if (message.Class == StunClass.ErrorResponse)
+        {
+            _logger.Warn($"TURN {message.Method} was rejected mid-session: {DescribeFailure(message)}.");
+        }
+
+        return true;
+    }
+
+    /// <summary>
     /// Unwraps an inbound Data indication. Returns false for anything else on the socket, which
     /// on the relay path means anything that is not peer media -- the caller passes those on
     /// untouched rather than guessing.
