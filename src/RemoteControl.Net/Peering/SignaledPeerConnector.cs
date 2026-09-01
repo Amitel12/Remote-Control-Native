@@ -3,6 +3,8 @@ using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using RemoteControl.Common;
 using RemoteControl.Net.Stun;
+using RemoteControl.Net.Transport;
+using RemoteControl.Net.Turn;
 using RemoteControl.Protocol;
 
 namespace RemoteControl.Net.Peering;
@@ -29,6 +31,24 @@ namespace RemoteControl.Net.Peering;
 /// that follows must all be the same socket or the mapping the punch opened
 /// does not apply to the traffic that matters.
 /// </summary>
+/// <summary>Where to reach the TURN server and how to authenticate -- coturn's lt-cred-mech user.</summary>
+public sealed record TurnCredentials(IPEndPoint Server, string Username, string Password);
+
+/// <summary>
+/// A peer connection ready to stream over, however it was reached. Callers get a transport
+/// rather than an endpoint precisely because the relay case cannot be expressed as one: relayed
+/// media is addressed to the TURN server and wrapped, so "the peer's address" is not something
+/// you can simply send to.
+///
+/// The transport is handed over unconnected on the direct path, matching what the P2P harness
+/// has always done -- the host half connects, the client half uses SendTo/ReceiveFrom. Calling
+/// Connect on a relayed transport is harmless: it is already pointed at the relay, and says so.
+/// </summary>
+public sealed record PeerConnection(IUdpTransport Transport, IPEndPoint PeerEndpoint, bool ViaRelay)
+{
+    public string Describe() => ViaRelay ? $"{PeerEndpoint} (TURN relay)" : $"{PeerEndpoint} (P2P, hole-punched)";
+}
+
 public sealed class SignaledPeerConnector
 {
     private readonly ISignalingChannel _channel;
@@ -48,6 +68,10 @@ public sealed class SignaledPeerConnector
     // throws InvalidOperationException on the second, and if the re-send got there first it is
     // the *initial* send that throws, failing an exchange that was otherwise fine.
     private readonly SemaphoreSlim _sendGate = new(1, 1);
+    // Set during candidate gathering when TURN is configured, so the fallback below already has
+    // an allocation to use -- it cannot be obtained after the punch fails, because the relayed
+    // address has to be advertised in the same candidate exchange the peer already consumed.
+    private TurnClient? _turnClient;
 
     public SignaledPeerConnector(ISignalingChannel channel, Socket socket, ILogger? logger = null)
     {
@@ -76,10 +100,11 @@ public sealed class SignaledPeerConnector
     /// remote peer is at best useless and at worst a false "path is open".
     /// Tests running both peers in one process pass it explicitly.
     /// </param>
-    public async Task<IPEndPoint> ConnectAsync(
+    public async Task<PeerConnection> ConnectAsync(
         Role role,
         string pairingCode,
         IPEndPoint? stunServer = null,
+        TurnCredentials? turn = null,
         TimeSpan? punchTimeout = null,
         IReadOnlyList<IPAddress>? localAddresses = null,
         TimeSpan? registrationTimeout = null,
@@ -104,7 +129,7 @@ public sealed class SignaledPeerConnector
             }
             _logger.Info($"Registered with the signaling server as {role} under pairing code {pairingCode}.");
 
-            var local = await GatherCandidatesAsync(stunServer, localAddresses, cancellationToken);
+            var local = await GatherCandidatesAsync(stunServer, turn, localAddresses, cancellationToken);
             _localCandidates.TrySetResult(local);
             await SendCandidatesAsync(local, cancellationToken);
 
@@ -114,8 +139,12 @@ public sealed class SignaledPeerConnector
             // reason -- a timeout here just converts "they were slow" into a confusing
             // failure. Cancellation (Ctrl+C) is the way out.
             var peer = await _peerCandidates.Task.WaitAsync(cancellationToken);
-            var peerEndpoints = ToEndpoints(peer);
-            if (peerEndpoints.Count == 0)
+            // Relay candidates are excluded from punching on purpose: a relayed address is the
+            // TURN server, which will not answer a punch probe and does not need to -- it is
+            // reached by relaying, below.
+            var peerEndpoints = ToEndpoints(peer, includeRelay: false);
+            var peerHasRelay = FirstEndpointOfKind(peer, CandidateKind.Relay) is not null;
+            if (peerEndpoints.Count == 0 && !peerHasRelay)
                 throw new InvalidOperationException("The peer advertised no usable IPv4 candidates.");
 
             // Sent before punching rather than after: it tells the peer probes are on their
@@ -126,18 +155,28 @@ public sealed class SignaledPeerConnector
             await SendAsync(new ClientMessage.HolePunchReady(), cancellationToken);
 
             var timeout = punchTimeout ?? TimeSpan.FromSeconds(30);
+            if (peerEndpoints.Count == 0)
+            {
+                _logger.Info("The peer advertised only a relayed address -- nothing to punch at, going straight to the relay.");
+                return await FallBackToRelayAsync(peer, timeout, cancellationToken);
+            }
+
             _logger.Info($"Punching toward {string.Join(", ", peerEndpoints)} (up to {timeout.TotalSeconds:0}s).");
             var coordinator = new HolePunchCoordinator(_socket, _logger);
             var established = await coordinator.PunchAsync(peerEndpoints, timeout, cancellationToken: cancellationToken);
-            if (established is null)
+            if (established is not null)
             {
-                throw new TimeoutException(
-                    $"Hole punch to {string.Join(", ", peerEndpoints)} did not succeed within {timeout}. " +
-                    "This is the restrictive-NAT case TURN relay fallback exists for (docs/PHASE-2.md).");
+                _logger.Info($"Path open to {established} -- direct, no relay.");
+                // Deliberately not connected here: the LAN client half drives this socket with
+                // SendTo/ReceiveFrom and learns the host's address from the first datagram, and
+                // connecting a UDP socket out from under that is exactly the kind of change that
+                // works on one OS and not the other. Whoever wants a connected socket -- the
+                // host half does -- calls Connect itself, as it always has.
+                return new PeerConnection(new UdpTransport(_socket), established, ViaRelay: false);
             }
 
-            _logger.Info($"Path open to {established}.");
-            return established;
+            _logger.Warn($"Hole punch did not succeed within {timeout} -- this is the restrictive-NAT case (docs/PHASE-2.md).");
+            return await FallBackToRelayAsync(peer, timeout, cancellationToken);
         }
         finally
         {
@@ -250,7 +289,7 @@ public sealed class SignaledPeerConnector
     }
 
     private async Task<IReadOnlyList<CandidateInit>> GatherCandidatesAsync(
-        IPEndPoint? stunServer, IReadOnlyList<IPAddress>? localAddresses, CancellationToken cancellationToken)
+        IPEndPoint? stunServer, TurnCredentials? turn, IReadOnlyList<IPAddress>? localAddresses, CancellationToken cancellationToken)
     {
         var port = ((IPEndPoint)_socket.LocalEndPoint!).Port;
         var candidates = (localAddresses ?? EnumerateLocalIPv4Addresses())
@@ -267,10 +306,93 @@ public sealed class SignaledPeerConnector
                 _logger.Warn($"STUN discovery against {stunServer} got no answer -- advertising host candidates only.");
         }
 
+        if (turn is not null)
+        {
+            // Allocated now rather than lazily on failure: the relayed address is only useful if
+            // the peer learns it, and the exchange that carries candidates happens once.
+            // A relay that turns out to be unnecessary costs one allocation the server drops on
+            // its own when the lifetime runs out.
+            try
+            {
+                var client = new TurnClient(_socket, turn.Server, turn.Username, turn.Password, _logger);
+                var allocation = await client.AllocateAsync(cancellationToken);
+                _turnClient = client;
+                candidates.Add(new CandidateInit(CandidateKind.Relay, allocation.RelayedEndpoint.Address.ToString(), allocation.RelayedEndpoint.Port));
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // A missing relay is a worse connection, not a failed one -- the direct path may
+                // still work, and refusing to continue would turn a degraded case into an outage.
+                _logger.Warn($"TURN allocation against {turn.Server} failed, continuing without a relay candidate: {ex.Message}");
+            }
+        }
+
         if (candidates.Count == 0)
             throw new InvalidOperationException("No local candidates to advertise: no usable IPv4 address and no STUN result.");
 
         return candidates;
+    }
+
+    /// <summary>
+    /// What happens on the network docs/PHASE-2.md found: a clean punch attempt that still
+    /// times out. Three cases, in order of preference -- our own allocation (relay to relay, or
+    /// relay to the peer's reflexive address), the peer's allocation if only they have one
+    /// (we send to it directly, which works because their permission covers us), or nothing,
+    /// which is the honest failure this used to be in every case.
+    /// </summary>
+    private async Task<PeerConnection> FallBackToRelayAsync(
+        IReadOnlyList<CandidateInit> peerCandidates, TimeSpan punchTimeout, CancellationToken cancellationToken)
+    {
+        var peerRelay = FirstEndpointOfKind(peerCandidates, CandidateKind.Relay);
+        var peerReflexive = FirstEndpointOfKind(peerCandidates, CandidateKind.Srflx);
+
+        if (_turnClient is not null)
+        {
+            var target = peerRelay ?? peerReflexive;
+            if (target is null)
+                throw new TimeoutException($"Hole punch failed within {punchTimeout} and the peer advertised no relayed or reflexive address to fall back to.");
+
+            // Permit both: which address the peer's media actually arrives from depends on
+            // whether they relayed too, and a missing permission is dropped silently by the
+            // server rather than reported.
+            var permitted = new List<IPEndPoint>();
+            foreach (var candidate in new[] { peerRelay, peerReflexive })
+                if (candidate is not null && !permitted.Contains(candidate)) permitted.Add(candidate);
+
+            foreach (var peer in permitted)
+                await _turnClient.CreatePermissionAsync(peer, cancellationToken);
+
+            _logger.Info($"Falling back to the TURN relay: sending to {target} through {_turnClient.ServerEndpoint}.");
+            var relayTransport = new TurnRelayTransport(new UdpTransport(_socket), _turnClient, target, permitted, logger: _logger);
+            return new PeerConnection(relayTransport, target, ViaRelay: true);
+        }
+
+        if (peerRelay is not null)
+        {
+            // Only the peer has a relay. Their allocation is reachable directly, and their
+            // permission for us is what makes the return path work -- so a plain socket pointed
+            // at their relayed address is enough, no allocation of our own required.
+            _logger.Info($"Falling back to the peer's TURN relay at {peerRelay} (no allocation of our own).");
+            var transport = new UdpTransport(_socket);
+            transport.Connect(peerRelay);
+            return new PeerConnection(transport, peerRelay, ViaRelay: true);
+        }
+
+        throw new TimeoutException(
+            $"Hole punch did not succeed within {punchTimeout} and no TURN relay is available on either side. " +
+            "This is the restrictive-NAT case a relay exists for (docs/PHASE-2.md) -- configure one.");
+    }
+
+    private static IPEndPoint? FirstEndpointOfKind(IReadOnlyList<CandidateInit> candidates, CandidateKind kind)
+    {
+        foreach (var candidate in candidates)
+        {
+            if (candidate.Kind != kind) continue;
+            if (IPAddress.TryParse(candidate.Ip, out var address) && address.AddressFamily == AddressFamily.InterNetwork)
+                return new IPEndPoint(address, candidate.Port);
+        }
+
+        return null;
     }
 
     private static IReadOnlyList<IPAddress> EnumerateLocalIPv4Addresses() =>
@@ -283,16 +405,13 @@ public sealed class SignaledPeerConnector
             .Distinct()
             .ToList();
 
-    /// <summary>
-    /// Relay candidates are accepted and punched at like any other -- a TURN allocation is
-    /// just another address as far as this is concerned -- but nothing allocates one yet, so
-    /// in practice they never appear. See docs/PHASE-2.md.
-    /// </summary>
-    private static IReadOnlyList<IPEndPoint> ToEndpoints(IReadOnlyList<CandidateInit> candidates)
+    /// <summary>Flattens candidates to endpoints, dropping anything not IPv4 and, for punching, relay addresses.</summary>
+    private static IReadOnlyList<IPEndPoint> ToEndpoints(IReadOnlyList<CandidateInit> candidates, bool includeRelay)
     {
         var endpoints = new List<IPEndPoint>();
         foreach (var candidate in candidates)
         {
+            if (!includeRelay && candidate.Kind == CandidateKind.Relay) continue;
             if (!IPAddress.TryParse(candidate.Ip, out var address) || address.AddressFamily != AddressFamily.InterNetwork)
                 continue;
             if (candidate.Port is <= 0 or > 65535)

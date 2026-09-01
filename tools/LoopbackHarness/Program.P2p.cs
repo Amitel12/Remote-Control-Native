@@ -27,11 +27,12 @@ namespace RemoteControl.Tools.LoopbackHarness;
 /// </summary>
 internal static partial class Program
 {
-    private static IPEndPoint ParseStunServer(string value)
+    /// <summary>Shared by --stun-server and --turn-server, which take the same host:port shape; the option name is only for the error text.</summary>
+    private static IPEndPoint ParseServerEndpoint(string value, string optionName = "--stun-server")
     {
         var separatorIndex = value.LastIndexOf(':');
         if (separatorIndex < 0 || !int.TryParse(value[(separatorIndex + 1)..], out var port))
-            throw new ArgumentException($"--stun-server requires host:port; got '{value}'.");
+            throw new ArgumentException($"{optionName} requires host:port; got '{value}'.");
 
         var host = value[..separatorIndex];
         if (IPAddress.TryParse(host, out var literal))
@@ -39,13 +40,13 @@ internal static partial class Program
 
         var resolved = Dns.GetHostAddresses(host).FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
         if (resolved is null)
-            throw new ArgumentException($"--stun-server host '{host}' did not resolve to an IPv4 address.");
+            throw new ArgumentException($"{optionName} host '{host}' did not resolve to an IPv4 address.");
         return new IPEndPoint(resolved, port);
     }
 
     private static void RunP2pHost(
         ILogger logger, int localPort, IPEndPoint stunServer, IPEndPoint? remoteCandidate, SignalingOptions? signaling,
-        int targetFrames, int parityPercent, int dropPercent, bool adaptiveBitrate, bool adaptiveFec, bool intraRefresh, bool remoteInput)
+        TurnCredentials? turn, int targetFrames, int parityPercent, int dropPercent, bool adaptiveBitrate, bool adaptiveFec, bool intraRefresh, bool remoteInput)
     {
         using var rawSocket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp)
         {
@@ -54,15 +55,17 @@ internal static partial class Program
         };
         rawSocket.Bind(new IPEndPoint(IPAddress.Any, localPort));
 
-        var peer = DiscoverAndPunchAsync(logger, rawSocket, stunServer, remoteCandidate, signaling, Role.Host).GetAwaiter().GetResult();
-        IUdpTransport socket = new UdpTransport(rawSocket);
-        socket.Connect(peer);
-        RunLanHostWithTransport(logger, socket, $"{peer} (P2P, hole-punched)", targetFrames, parityPercent, dropPercent, adaptiveBitrate, adaptiveFec, intraRefresh, remoteInput);
+        var connection = EstablishPeerConnectionAsync(logger, rawSocket, stunServer, remoteCandidate, signaling, turn, Role.Host)
+            .GetAwaiter().GetResult();
+        // The host half streams to one fixed peer, so it connects -- on the relay path that is a
+        // no-op, since the transport is already pointed at the relay.
+        connection.Transport.Connect(connection.PeerEndpoint);
+        RunLanHostWithTransport(logger, connection.Transport, connection.Describe(), targetFrames, parityPercent, dropPercent, adaptiveBitrate, adaptiveFec, intraRefresh, remoteInput);
     }
 
     private static void RunP2pClient(
         ILogger logger, int localPort, IPEndPoint stunServer, IPEndPoint? remoteCandidate, SignalingOptions? signaling,
-        int targetFrames, bool verifyFrame, bool remoteInput, int dropInputPercent)
+        TurnCredentials? turn, int targetFrames, bool verifyFrame, bool remoteInput, int dropInputPercent)
     {
         using var rawSocket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp)
         {
@@ -70,10 +73,10 @@ internal static partial class Program
         };
         rawSocket.Bind(new IPEndPoint(IPAddress.Any, localPort));
 
-        DiscoverAndPunchAsync(logger, rawSocket, stunServer, remoteCandidate, signaling, Role.Client).GetAwaiter().GetResult();
-        IUdpTransport socket = new UdpTransport(rawSocket);
-        logger.Info("Peer reachable -- entering the normal LAN client session (video streaming is identical either way).");
-        RunLanClientSession(logger, socket, targetFrames, verifyFrame, remoteInput, dropInputPercent);
+        var connection = EstablishPeerConnectionAsync(logger, rawSocket, stunServer, remoteCandidate, signaling, turn, Role.Client)
+            .GetAwaiter().GetResult();
+        logger.Info($"Peer reachable via {connection.Describe()} -- entering the normal LAN client session (video streaming is identical either way).");
+        RunLanClientSession(logger, connection.Transport, targetFrames, verifyFrame, remoteInput, dropInputPercent);
     }
 
     /// <summary>
@@ -85,15 +88,23 @@ internal static partial class Program
     /// endpoint either way -- the streaming code that follows cannot tell
     /// the difference.
     /// </summary>
-    private static async Task<IPEndPoint> DiscoverAndPunchAsync(
+    private static async Task<PeerConnection> EstablishPeerConnectionAsync(
         ILogger logger, Socket socket, IPEndPoint stunServer, IPEndPoint? remoteCandidate,
-        SignalingOptions? signaling, Role role)
+        SignalingOptions? signaling, TurnCredentials? turn, Role role)
     {
         if (signaling is not null)
         {
             if (remoteCandidate is not null)
                 logger.Warn("--remote-candidate is ignored when --signaling-server is set; candidates come from the peer.");
-            return await ConnectViaSignalingAsync(logger, socket, stunServer, signaling, role);
+            return await ConnectViaSignalingAsync(logger, socket, stunServer, signaling, turn, role);
+        }
+
+        if (turn is not null)
+        {
+            // The relayed address is only useful once the peer knows it, and manual candidate
+            // entry has no way to carry a second candidate -- so a relay needs the signaling
+            // path. Said plainly rather than allocating something that could never be used.
+            logger.Warn("--turn-server needs --signaling-server to advertise the relayed candidate; continuing without a relay.");
         }
 
         var local = (IPEndPoint)socket.LocalEndPoint!;
@@ -130,7 +141,7 @@ internal static partial class Program
             throw new TimeoutException($"Hole punch to {peerCandidate} did not succeed within 30s.");
 
         logger.Info($"Hole punch succeeded -- path open to {established}.");
-        return established;
+        return new PeerConnection(new UdpTransport(socket), established, ViaRelay: false);
     }
 
     /// <summary>
@@ -140,13 +151,30 @@ internal static partial class Program
     /// punch lands, the media path is the punched UDP socket and nothing
     /// needs the WebSocket any more.
     /// </summary>
-    private static async Task<IPEndPoint> ConnectViaSignalingAsync(
-        ILogger logger, Socket socket, IPEndPoint stunServer, SignalingOptions signaling, Role role)
+    private static async Task<PeerConnection> ConnectViaSignalingAsync(
+        ILogger logger, Socket socket, IPEndPoint stunServer, SignalingOptions signaling, TurnCredentials? turn, Role role)
     {
-        logger.Info($"Connecting to signaling server {signaling.ServerUri} as {role} (pairing code {signaling.PairingCode}).");
+        logger.Info($"Connecting to signaling server {signaling.ServerUri} as {role} (pairing code {signaling.PairingCode})" +
+                    $"{(turn is not null ? $", with TURN relay fallback via {turn.Server}" : "")}.");
         await using var channel = new SignalingClient(signaling.ServerUri, logger);
         var connector = new SignaledPeerConnector(channel, socket, logger);
-        return await connector.ConnectAsync(role, signaling.PairingCode, stunServer, TimeSpan.FromSeconds(30));
+        return await connector.ConnectAsync(role, signaling.PairingCode, stunServer, turn, TimeSpan.FromSeconds(30));
+    }
+
+    /// <summary>
+    /// --turn-server host:port with --turn-user and --turn-password, matching the single static
+    /// lt-cred-mech user in deploy/turnserver.conf.example. All three or none.
+    /// </summary>
+    private static TurnCredentials? ReadTurnCredentials(string[] args)
+    {
+        var server = ReadOption(args, "--turn-server");
+        var user = ReadOption(args, "--turn-user");
+        var password = ReadOption(args, "--turn-password");
+        if (server is null && user is null && password is null) return null;
+        if (server is null || user is null || password is null)
+            throw new ArgumentException("--turn-server, --turn-user and --turn-password must be given together.");
+
+        return new TurnCredentials(ParseServerEndpoint(server, "--turn-server"), user, password);
     }
 
     /// <summary>Both halves are required together -- a pairing code means nothing without a server to pair through.</summary>

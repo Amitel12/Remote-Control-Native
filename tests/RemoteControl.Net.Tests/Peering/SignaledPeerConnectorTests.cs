@@ -1,6 +1,8 @@
 using System.Net;
 using System.Net.Sockets;
 using RemoteControl.Net.Peering;
+using RemoteControl.Net.Tests.Turn;
+using RemoteControl.Net.Turn;
 using RemoteControl.Protocol;
 using Xunit;
 
@@ -40,8 +42,9 @@ public class SignaledPeerConnectorTests
 
         var established = await Task.WhenAll(hostConnect, clientConnect);
 
-        Assert.Equal((IPEndPoint)clientSocket.LocalEndPoint!, established[0]);
-        Assert.Equal((IPEndPoint)hostSocket.LocalEndPoint!, established[1]);
+        Assert.Equal((IPEndPoint)clientSocket.LocalEndPoint!, established[0].PeerEndpoint);
+        Assert.Equal((IPEndPoint)hostSocket.LocalEndPoint!, established[1].PeerEndpoint);
+        Assert.All(established, connection => Assert.False(connection.ViaRelay));
     }
 
     [Fact]
@@ -63,8 +66,9 @@ public class SignaledPeerConnectorTests
 
         var established = await Task.WhenAll(hostConnect, clientConnect);
 
-        Assert.Equal((IPEndPoint)clientSocket.LocalEndPoint!, established[0]);
-        Assert.Equal((IPEndPoint)hostSocket.LocalEndPoint!, established[1]);
+        Assert.Equal((IPEndPoint)clientSocket.LocalEndPoint!, established[0].PeerEndpoint);
+        Assert.Equal((IPEndPoint)hostSocket.LocalEndPoint!, established[1].PeerEndpoint);
+        Assert.All(established, connection => Assert.False(connection.ViaRelay));
     }
 
     [Fact]
@@ -161,6 +165,106 @@ public class SignaledPeerConnectorTests
         Assert.False(server.SawConcurrentSend, "The connector issued two sends at once; a real ClientWebSocket would have thrown.");
     }
 
+    [Fact]
+    public async Task ConnectAsync_FallsBackToTheRelay_WhenThePunchTimesOut()
+    {
+        // The case docs/PHASE-2.md hit for real: a clean punch attempt that still times out. Up
+        // to now that was the end of the road; the relay is what makes such a network usable.
+        using var turnServer = new FakeTurnServer { RelayedEndpoint = new IPEndPoint(IPAddress.Parse("203.0.113.9"), 49155) };
+        turnServer.Start();
+        var server = new FakeSignalingServer();
+        using var socket = BindLoopbackSocket();
+        var channel = server.CreateChannel();
+
+        var connect = new SignaledPeerConnector(channel, socket).ConnectAsync(
+            Role.Host, "ABC123",
+            turn: new TurnCredentials(turnServer.Endpoint, "app-user", "s3cret"),
+            punchTimeout: TimeSpan.FromMilliseconds(300),
+            localAddresses: LoopbackOnly);
+        await server.WaitForMemberCountAsync(1);
+
+        var peerRelay = new IPEndPoint(IPAddress.Parse("203.0.113.10"), 49200);
+        server.DeliverTo(channel, new ServerMessage.StunCandidates([
+            new CandidateInit(CandidateKind.Srflx, "127.0.0.1", 1), // nothing there: the punch fails
+            new CandidateInit(CandidateKind.Relay, peerRelay.Address.ToString(), peerRelay.Port),
+        ]));
+
+        var result = await connect;
+        using var transport = result.Transport;
+
+        Assert.True(result.ViaRelay);
+        Assert.Equal(peerRelay, result.PeerEndpoint);
+        Assert.IsType<TurnRelayTransport>(result.Transport);
+        // The relay only forwards for peers it has been told about, so the fallback has to
+        // create permissions before handing back a transport.
+        Assert.True(turnServer.PermissionRequests >= 1, "expected a permission for the peer's relayed address.");
+    }
+
+    [Fact]
+    public async Task ConnectAsync_AdvertisesARelayCandidate_WhenTurnIsConfigured()
+    {
+        // The allocation has to happen during gathering: candidates are exchanged once, so a
+        // relayed address obtained later could never reach the peer.
+        using var turnServer = new FakeTurnServer { RelayedEndpoint = new IPEndPoint(IPAddress.Parse("203.0.113.9"), 49155) };
+        turnServer.Start();
+        var server = new FakeSignalingServer();
+        using var socket = BindLoopbackSocket();
+        var channel = server.CreateChannel();
+
+        var connect = new SignaledPeerConnector(channel, socket).ConnectAsync(
+            Role.Host, "ABC123",
+            turn: new TurnCredentials(turnServer.Endpoint, "app-user", "s3cret"),
+            punchTimeout: TimeSpan.FromMilliseconds(200),
+            localAddresses: LoopbackOnly);
+        await server.WaitForMemberCountAsync(1);
+        await WaitForAsync(() => server.LastCandidatesFrom(channel) is not null);
+
+        var advertised = server.LastCandidatesFrom(channel)!;
+        Assert.Contains(advertised, candidate => candidate.Kind == CandidateKind.Relay
+                                                 && candidate.Ip == "203.0.113.9" && candidate.Port == 49155);
+
+        // The peer has no relay of its own, but we do -- so the fallback relays to their
+        // reflexive address, which works because their NAT opens for our relay once they are
+        // sending to it. One-sided TURN is enough.
+        var peerReflexive = new IPEndPoint(IPAddress.Loopback, 1);
+        server.DeliverTo(channel, new ServerMessage.StunCandidates([
+            new CandidateInit(CandidateKind.Srflx, peerReflexive.Address.ToString(), peerReflexive.Port),
+        ]));
+
+        var result = await connect;
+        using var transport = result.Transport;
+
+        Assert.True(result.ViaRelay);
+        Assert.Equal(peerReflexive, result.PeerEndpoint);
+    }
+
+    [Fact]
+    public async Task ConnectAsync_ContinuesWithoutARelay_WhenTheTurnServerIsUnreachable()
+    {
+        // A relay that cannot be allocated is a worse connection, not a failed one -- the direct
+        // path may still work, and refusing to continue would turn degraded into down.
+        var server = new FakeSignalingServer();
+        using var hostSocket = BindLoopbackSocket();
+        using var clientSocket = BindLoopbackSocket();
+
+        var unreachableTurn = new TurnCredentials(new IPEndPoint(IPAddress.Loopback, 1), "app-user", "s3cret");
+        var hostConnect = new SignaledPeerConnector(server.CreateChannel(), hostSocket).ConnectAsync(
+            Role.Host, "ABC123", turn: unreachableTurn, punchTimeout: TimeSpan.FromSeconds(5), localAddresses: LoopbackOnly);
+        await server.WaitForMemberCountAsync(1);
+        var clientConnect = new SignaledPeerConnector(server.CreateChannel(), clientSocket).ConnectAsync(
+            Role.Client, "ABC123", turn: unreachableTurn, punchTimeout: TimeSpan.FromSeconds(5), localAddresses: LoopbackOnly);
+
+        var established = await Task.WhenAll(hostConnect, clientConnect);
+
+        Assert.All(established, connection => Assert.False(connection.ViaRelay));
+        Assert.Equal((IPEndPoint)clientSocket.LocalEndPoint!, established[0].PeerEndpoint);
+    }
+
+    private static async Task WaitForAsync(Func<bool> condition)
+    {
+        for (var attempt = 0; attempt < 300 && !condition(); attempt++) await Task.Delay(10);
+    }
+
     private static Socket BindLoopbackSocket()
     {
         var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
@@ -178,6 +282,7 @@ public class SignaledPeerConnectorTests
     private sealed class FakeSignalingServer
     {
         private readonly List<FakeChannel> _members = [];
+        private readonly Dictionary<FakeChannel, IReadOnlyList<CandidateInit>> _advertised = new();
         private readonly object _gate = new();
 
         public ServerMessage? RejectRegistrationWith { get; init; }
@@ -200,6 +305,12 @@ public class SignaledPeerConnectorTests
         public ISignalingChannel CreateChannel() => new FakeChannel(this);
 
         public void DeliverTo(ISignalingChannel channel, ServerMessage message) => ((FakeChannel)channel).Deliver(message);
+
+        /// <summary>The candidates a peer last sent, so a test can check what actually went on the wire.</summary>
+        public IReadOnlyList<CandidateInit>? LastCandidatesFrom(ISignalingChannel channel)
+        {
+            lock (_gate) return _advertised.GetValueOrDefault((FakeChannel)channel);
+        }
 
         public async Task WaitForMemberCountAsync(int count)
         {
@@ -239,6 +350,7 @@ public class SignaledPeerConnectorTests
                     break;
 
                 case ClientMessage.StunCandidates candidates:
+                    lock (_gate) _advertised[sender] = candidates.Candidates;
                     Relay(sender, new ServerMessage.StunCandidates(candidates.Candidates));
                     break;
 

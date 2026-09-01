@@ -418,10 +418,10 @@ Ordered so the two highest-risk unknowns surface first, not last.
    proved entirely justified: it succeeded on two (68ms and ~9s), needed a
    real bug fixed to work on a third (one side stopping its probes too
    early), and **failed outright on a fourth** despite a clean attempt.
-   That last one is the case TURN exists for, and TURN is still
-   unimplemented, so today this risk is bounded by nothing at all on a
-   restrictive network. `CandidateKind.Host`/`Relay` are both still
-   unwired.
+   That last one is the case TURN exists for. TURN is now implemented and
+   `CandidateKind.Host`/`Relay` are both wired, so the downside is bounded in
+   code -- but only in code: nothing here has spoken to real coturn, and an
+   untested fallback is not yet a bound. That test is what closes this risk.
 4. **Solo-scope reality check.** Sunshine represents years of accumulated
    tuning compressed here into a handful of phases. Treat Phase 0 and
    Phase 2 as genuine checkpoints where "this is taking much longer than
@@ -469,12 +469,13 @@ order.
    `--signaling-server`/`--pairing-code` is what turns the manual
    copy/paste off for good -- and it comes before the TURN work because
    every NAT test after it gets cheaper.
-3. **Implement TURN relay fallback.** A real residential network has now
-   been found where direct hole-punching genuinely cannot succeed
-   (`docs/PHASE-2.md`), so this is a requirement, not a nice-to-have. The
-   coturn deployment already exists and is payload-agnostic;
-   `CandidateKind.Relay` exists but nothing allocates or uses it. Host
-   candidates (both peers on one LAN) are unwired for the same reason.
+3. **Run the TURN fallback against real coturn.** It is implemented
+   (`docs/PHASE-2.md`, "TURN relay fallback") and tested against a fake
+   server, which cannot catch a misread of the RFC that both implementations
+   share. `docker compose -f deploy/docker-compose.yml up -d` in
+   `amitel12/tests` brings up both the signaling server and coturn, so this
+   and step 2 are one session's work -- ideally from the restrictive network
+   that motivated it.
 4. **Close out Phase 4's bandwidth half.** `tools/LossyProxy` shapes loss,
    reordering and jitter but has no bandwidth cap, so the "constrained
    bandwidth" half of the milestone is untested and the AIMD constants stay
