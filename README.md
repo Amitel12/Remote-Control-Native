@@ -35,8 +35,10 @@ What's implemented now:
   real UDP loopback STUN round trip.
 - **`RemoteControl.Signaling`** -- WebSocket client speaking the updated
   signaling protocol against `amitel12/tests`'s (unchanged) signaling
-  server. Implemented, but nothing drives it end to end yet -- P2P
-  candidate exchange is still manual copy/paste.
+  server, driven by `RemoteControl.Net.Peering.SignaledPeerConnector` to
+  exchange candidates and hole-punch automatically. Verified against an
+  in-process fake of the server plus a real loopback punch; no server is
+  deployed yet, so it has not run against the real one.
 - **`RemoteControl.Capture` / `Codec` / `Render`** -- real D3D11 Desktop
   Duplication, native NVIDIA NVENC (including live bitrate reconfigure and
   optional continuous intra-refresh), D3D11-backed H.264 decode, and
@@ -50,11 +52,12 @@ What's implemented now:
   input demos. **`tools/LossyProxy`** -- a real impairing UDP relay (bursty
   loss, reordering, jitter) used to validate FEC and the decode path.
 
-The two things standing between this and a usable app: TURN relay fallback
-(a real restrictive NAT has been found where direct punching cannot
-succeed -- see `docs/PHASE-2.md`) and automated signaling. `RemoteControl.App`
-(WPF) is still a placeholder; nothing above runs through it yet. See
-`docs/ARCHITECTURE.md`'s "Next step" for the full ordered list.
+Standing between this and a usable app: a deployed signaling server to run
+the now-automated candidate exchange against, and TURN relay fallback (a
+real restrictive NAT has been found where direct punching cannot succeed --
+see `docs/PHASE-2.md`). `RemoteControl.App` (WPF) is still a placeholder;
+nothing above runs through it yet. See `docs/ARCHITECTURE.md`'s "Next step"
+for the full ordered list.
 
 ## Building
 

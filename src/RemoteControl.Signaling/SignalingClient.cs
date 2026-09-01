@@ -2,6 +2,7 @@ using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using RemoteControl.Common;
+using RemoteControl.Net.Peering;
 using RemoteControl.Protocol;
 
 namespace RemoteControl.Signaling;
@@ -12,11 +13,13 @@ namespace RemoteControl.Signaling;
 /// docs/WIRE-PROTOCOL.md). This is the C# equivalent of the old Electron
 /// app's SignalingClient (shared-webrtc/signaling-client.ts): connect,
 /// register with a pairing code, and surface incoming ServerMessages to the
-/// caller (HolePunchCoordinator, in Phase 2) via an event rather than
-/// owning any NAT-traversal logic itself -- this class only knows how to
-/// move JSON messages across the WebSocket.
+/// caller (SignaledPeerConnector, which drives the Phase 2 exchange) via an
+/// event rather than owning any NAT-traversal logic itself -- this class
+/// only knows how to move JSON messages across the WebSocket. That split is
+/// what ISignalingChannel names: the connector is testable against a fake
+/// channel precisely because none of the choreography lives here.
 /// </summary>
-public sealed class SignalingClient : IAsyncDisposable
+public sealed class SignalingClient : ISignalingChannel, IAsyncDisposable
 {
     private readonly ClientWebSocket _socket = new();
     private readonly ILogger _logger;

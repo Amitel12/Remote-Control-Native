@@ -266,14 +266,18 @@ Ordered so the two highest-risk unknowns surface first, not last.
    network at a relative's house) a clean attempt with byte-matched
    candidates and ~25s of genuine window overlap **still timed out** -- the
    restrictive-NAT case, confirmed for real rather than hypothetically.
-   Candidate exchange is still manual (copy/paste) rather than automated --
-   `SignalingClient` (already implemented) speaks the
-   `register`/`stun-candidates`/`hole-punch-ready` protocol, but nothing
-   wires it to `HolePunchCoordinator` yet, since no signaling server is
-   currently deployed to test against; that manual exchange has now cost
-   several failed test attempts on its own (stale candidates after a
-   restart, transcription typos, `dotnet run` build time eating the punch
-   window). TURN relay fallback remains unimplemented. **Milestone**: two
+   Candidate exchange is automated in code as of
+   `RemoteControl.Net.Peering.SignaledPeerConnector`, which drives the full
+   `register` -> `peer-joined` -> `stun-candidates` -> `hole-punch-ready`
+   flow through `SignalingClient` and hands `HolePunchCoordinator` the
+   result (`--signaling-server`/`--pairing-code` on the harness; the manual
+   prompt remains the fallback). That closes the gap that caused most of the
+   failed attempts above -- stale candidates after a restart, transcription
+   typos, one side's punch window elapsing during the other's build -- but
+   **no signaling server is deployed**, so it is verified only against an
+   in-process fake of the server's relay behaviour plus a real loopback
+   punch, never against the real thing. TURN relay fallback remains
+   unimplemented. **Milestone**: two
    machines on genuinely different home networks connect and stream
    direct/STUN -- met. A restrictive-network test confirming TURN carries
    the protocol end-to-end -- still open, and no longer optional: a real
@@ -457,15 +461,14 @@ order.
    two-machine run (ideally the cellular P2P condition they were written
    for) recording input-to-present with each flag off and on turns them
    from plausible into justified -- or finds that one of them doesn't help.
-2. **Automate signaling candidate exchange.** `SignalingClient` and
-   `HolePunchCoordinator` both exist but nothing connects them, so every
-   P2P test is a manual copy/paste of candidates -- which has now caused
-   several failed attempts on its own (stale candidates after a restart,
-   transcription typos, `dotnet run` build time eating the punch window).
-   Wiring `register` -> `peer-joined` -> `stun-candidates` ->
-   `hole-punch-ready` through to the punch makes every later NAT test
-   cheaper, which is why it comes before the TURN work it will be used to
-   test.
+2. **Deploy a signaling server and run the automated exchange against it.**
+   `SignaledPeerConnector` now connects `SignalingClient` to
+   `HolePunchCoordinator`, but the only server it has ever spoken to is an
+   in-process fake. Standing up `packages/signaling-server` from
+   `amitel12/tests` and running both harness sides against it with
+   `--signaling-server`/`--pairing-code` is what turns the manual
+   copy/paste off for good -- and it comes before the TURN work because
+   every NAT test after it gets cheaper.
 3. **Implement TURN relay fallback.** A real residential network has now
    been found where direct hole-punching genuinely cannot succeed
    (`docs/PHASE-2.md`), so this is a requirement, not a nice-to-have. The

@@ -167,14 +167,64 @@ first real confirmation of both Phase 3 reliability fixes
 `InputSequenceDedup` pair) surviving actual internet jitter/loss end to end,
 not just the simulated `LossyProxy`/`--drop-input-percent` harness paths.
 
+## Automated candidate exchange
+
+Every punch recorded above exchanged candidates by hand -- one person
+reading an `ip:port` out of a terminal and typing it into another. That is
+also where most of the failures came from: of the six attempts in the
+restrictive-NAT test, five failed for pasting reasons (a candidate gone
+stale after a restart, a transcription mismatch, `dotnet run`'s build time
+eating one side's punch window) and only the sixth was a real NAT result.
+The mechanism was never in doubt; the manual step around it was.
+
+`RemoteControl.Net.Peering.SignaledPeerConnector` removes that step. It
+registers with the signaling server under a pairing code, advertises its own
+candidates, waits for the peer's, and punches -- returning the same kind of
+confirmed-reachable `IPEndPoint` the manual path returned, so the streaming
+code behind it is untouched. `tools/LoopbackHarness` uses it when both
+`--signaling-server ws://host:port` and `--pairing-code CODE` are given:
+
+```
+LoopbackHarness --p2p-host 47000   --signaling-server ws://<server>:8080 --pairing-code ABC123 ...
+LoopbackHarness --p2p-client 47001 --signaling-server ws://<server>:8080 --pairing-code ABC123 ...
+```
+
+Two details that are easy to get wrong, both settled in
+`docs/WIRE-PROTOCOL.md`'s "Exchange order":
+
+- **The first peer into the room must re-send its candidates on
+  `peer-joined`.** The server relays to whoever is present and never
+  replays, so the candidates the first peer sends on registration reach
+  nobody. Without the re-send, exactly one side ends up with the other's
+  candidates and both sides wait.
+- **Host candidates are advertised alongside the server-reflexive one**, so
+  two peers on the same LAN can connect without their traffic leaving it.
+  Loopback addresses are deliberately excluded: a probe to `127.0.0.1` goes
+  to the prober's own machine, which is useless at best and a false "path is
+  open" at worst.
+
+**What this is verified against**: an in-process fake of the server's relay
+logic plus real UDP sockets doing a real punch over loopback
+(`SignaledPeerConnectorTests`) -- both registration orders, a rejected
+registration, a peer that leaves, an unreachable candidate, and a peer whose
+candidates are all unusable. That covers the choreography, which is the part
+with the failure modes. It does **not** cover the real server: nothing here
+has spoken to a deployed `packages/signaling-server`, and until it has, the
+JSON on the wire is only as correct as `docs/WIRE-PROTOCOL.md` says it is.
+
 ## What's still manual / open
 
-- **No deployed signaling server yet** to exchange `stun-candidates`
-  automatically -- `SignalingClient` (Phase 0) is implemented and tested
-  against the WebSocket protocol shape, but nothing in this repo drives it
-  end to end with `HolePunchCoordinator` yet. That wiring, plus the
-  `register` -> `peer-joined` -> `stun-candidates` -> `hole-punch-ready`
-  flow from `docs/WIRE-PROTOCOL.md`, is the next real piece of Phase 2 work.
+- **The candidate exchange is now automated in code, but has never run
+  against a real server.** `RemoteControl.Net.Peering.SignaledPeerConnector`
+  drives the whole `register` -> `peer-joined` -> `stun-candidates` ->
+  `hole-punch-ready` flow and hands back a punched endpoint; the harness
+  uses it when given `--signaling-server`/`--pairing-code` and falls back to
+  the manual prompt otherwise. See "Automated candidate exchange" above for
+  what is and isn't proven. **No signaling server is deployed**, so the only
+  evidence it works is a test against an in-process fake of the server's
+  relay behaviour -- deploying `packages/signaling-server` from
+  `amitel12/tests` and running the two harness sides against it is the
+  remaining step.
 - **TURN relay fallback is not implemented.** The original test's NAT
   happened not to be symmetric; the restrictive-NAT test above (see "Real
   restrictive-NAT failure") confirms this is not a hypothetical risk -- a
