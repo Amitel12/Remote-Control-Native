@@ -34,12 +34,13 @@ What's implemented now:
   cross, AIMD congestion controller, jitter-buffer frame pacer, and
   LAN-session framing. Its tests include exhaustive K-of-N FEC reconstruction and a
   real UDP loopback STUN round trip.
-- **`RemoteControl.Signaling`** -- WebSocket client speaking the updated
-  signaling protocol against `amitel12/tests`'s (unchanged) signaling
-  server, driven by `RemoteControl.Net.Peering.SignaledPeerConnector` to
-  exchange candidates and hole-punch automatically. Verified against an
-  in-process fake of the server plus a real loopback punch; no server is
-  deployed yet, so it has not run against the real one.
+- **`RemoteControl.Signaling`** -- WebSocket client speaking the signaling
+  protocol against `src/RemoteControl.SignalingServer` (this repo's own
+  pairing/relay server, replacing a dependency on `amitel12/tests`'s
+  signaling server), driven by `RemoteControl.Net.Peering.SignaledPeerConnector`
+  to exchange candidates and hole-punch automatically. Verified against an
+  in-process fake of the server, a real loopback punch, and a real-WebSocket
+  smoke test of the server itself; no instance is deployed for real use yet.
 - **`RemoteControl.Capture` / `Codec` / `Render`** -- real D3D11 Desktop
   Duplication, native NVIDIA NVENC (including live bitrate reconfigure and
   optional continuous intra-refresh), D3D11-backed H.264 decode, and
@@ -54,10 +55,11 @@ What's implemented now:
   loss, reordering, jitter) used to validate FEC and the decode path.
 
 Standing between this and a usable app: one session against a deployed
-`deploy/docker-compose.yml` from `amitel12/tests`, which runs both the
-signaling server and coturn -- the automated candidate exchange and the TURN
-relay fallback are both written and tested against fakes, and neither has
-met the real thing. `RemoteControl.App` (WPF) is still a placeholder;
+`src/RemoteControl.SignalingServer` and a real coturn instance -- the
+automated candidate exchange and the TURN relay fallback are both written
+and tested against fakes, and neither has met the real thing (the
+signaling server itself has passed a real-WebSocket smoke test, but not an
+actual two-machine run). `RemoteControl.App` (WPF) is still a placeholder;
 nothing above runs through it yet. See `docs/ARCHITECTURE.md`'s "Next step"
 for the full ordered list.
 
@@ -103,6 +105,13 @@ explicitly to match, i.e. `-p:Platform=x64`.
 The WPF shell is still a placeholder. Run the proven pipeline, LAN and P2P
 modes through `tools/LoopbackHarness`; see `docs/PHASE-0.md` through
 `docs/PHASE-4.md`.
+
+`src/RemoteControl.SignalingServer` runs cross-platform (`dotnet run
+--project src/RemoteControl.SignalingServer`). It binds all interfaces
+(`http://+:7777/`) by default, which needs either an elevated process or a
+one-time `netsh http add urlacl url=http://+:7777/ user=Everyone`; pass
+`--host localhost` for local-only testing (no elevation needed) or
+`--port` to change the port.
 
 ## Gotchas
 

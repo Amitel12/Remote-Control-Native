@@ -1,0 +1,24 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The pairing/room-relay server RemoteControl.Signaling.SignalingClient
+    speaks to (docs/WIRE-PROTOCOL.md). Replaces amitel12/tests's
+    packages/signaling-server: same wire protocol, own implementation, so
+    this repo no longer depends on the old prototype to run for real. Pure
+    HttpListener + WebSocket, no ASP.NET Core: the protocol is a handful of
+    JSON message types relayed between at most two sockets, which doesn't
+    need a web framework.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\RemoteControl.Protocol\RemoteControl.Protocol.csproj" />
+    <ProjectReference Include="..\RemoteControl.Common\RemoteControl.Common.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -38,10 +38,13 @@ researched in the planning session:
   in the spirit of Moonlight/Sunshine's and Parsec's own protocols.
 - **Repo: a new, separate GitHub repository** -- this one. Cleaner
   per-language separation (dotnet SDK vs Node tooling never mix),
-  independent history. `amitel12/tests`'s `packages/signaling-server` and
-  `deploy/` (coturn) stay right where they are and keep running -- only
-  their JSON message *payloads* gained new variants (see "Signaling
-  protocol changes" below).
+  independent history. The signaling protocol itself started as an
+  additive change to `amitel12/tests`'s `packages/signaling-server` (see
+  "Signaling protocol changes" below), but this repo now has its own
+  implementation, `src/RemoteControl.SignalingServer` -- same wire
+  protocol, no dependency on the old repo to run. `deploy/` (coturn) in
+  `amitel12/tests` is still the reference TURN config; any standalone
+  coturn instance works.
 - Platform scope: Windows host + Windows client only, same as the
   Electron app.
 - Same v1 feature baseline as the Electron app (screen mirror,
@@ -176,7 +179,11 @@ actually shipped is additive instead:
   payload-agnostic; coturn works as the fallback relay for this app's
   custom UDP protocol exactly as it did for WebRTC.
 
-See `docs/WIRE-PROTOCOL.md` for the resulting message shapes.
+See `docs/WIRE-PROTOCOL.md` for the resulting message shapes. This section
+records that history; the server this repo actually runs against today is
+its own `src/RemoteControl.SignalingServer`, a from-scratch implementation
+of the same relay behaviour (see the Next-step list below), not the
+`amitel12/tests` one described above.
 
 ## Phased build order
 
@@ -464,18 +471,24 @@ order.
 2. **Deploy a signaling server and run the automated exchange against it.**
    `SignaledPeerConnector` now connects `SignalingClient` to
    `HolePunchCoordinator`, but the only server it has ever spoken to is an
-   in-process fake. Standing up `packages/signaling-server` from
-   `amitel12/tests` and running both harness sides against it with
-   `--signaling-server`/`--pairing-code` is what turns the manual
-   copy/paste off for good -- and it comes before the TURN work because
-   every NAT test after it gets cheaper.
+   in-process fake. `src/RemoteControl.SignalingServer` (own implementation
+   of the same relay protocol, replacing the `amitel12/tests` dependency
+   this item used to name) has passed a real-WebSocket smoke test
+   (register/ack, peer-joined, candidate relay both ways, hole-punch-ready
+   relay, peer-left on disconnect, room-full rejection) but not yet an
+   actual two-machine run. Running both harness sides against a deployed
+   instance with `--signaling-server`/`--pairing-code` is what turns the
+   manual copy/paste off for good -- and it comes before the TURN work
+   because every NAT test after it gets cheaper.
 3. **Run the TURN fallback against real coturn.** It is implemented
    (`docs/PHASE-2.md`, "TURN relay fallback") and tested against a fake
    server, which cannot catch a misread of the RFC that both implementations
-   share. `docker compose -f deploy/docker-compose.yml up -d` in
-   `amitel12/tests` brings up both the signaling server and coturn, so this
-   and step 2 are one session's work -- ideally from the restrictive network
-   that motivated it.
+   share. coturn itself is unrelated to `amitel12/tests` (any standalone
+   instance works, e.g. via `deploy/turnserver.conf.example` there as a
+   reference config, or a fresh `docker run coturn/coturn`), so this and
+   step 2 no longer share a dependency -- but doing them in one session,
+   ideally from the restrictive network that motivated the TURN work, is
+   still the efficient path.
 4. **Close out Phase 4's bandwidth half.** `tools/LossyProxy` shapes loss,
    reordering and jitter but has no bandwidth cap, so the "constrained
    bandwidth" half of the milestone is untested and the AIMD constants stay

@@ -1,16 +1,17 @@
 # Wire protocol
 
-Single source of truth for the two protocols this app speaks, referenced
-from both this repo and `amitel12/tests` (the signaling server + the
-retired Electron prototype). Keep this file in sync with both
-implementations when either changes.
+Single source of truth for the two protocols this app speaks. The payload
+shapes originated as an additive change to `amitel12/tests` (the retired
+Electron prototype's signaling server); this repo now has its own server
+implementing the same wire protocol, so this file only needs to stay in
+sync within this repo.
 
 ## 1. Signaling protocol (JSON over WebSocket)
 
-Spoken between `RemoteControl.Signaling.SignalingClient` (this repo) and
-`packages/signaling-server` (the `amitel12/tests` repo, unchanged
-room/relay logic). Types: `RemoteControl.Protocol.ClientMessage` /
-`ServerMessage` here, `packages/shared/src/signaling-protocol.ts` there.
+Spoken between `RemoteControl.Signaling.SignalingClient` and
+`src/RemoteControl.SignalingServer` (both this repo) -- room/relay logic:
+register into a room by pairing code, relay everything else to the other
+member. Types: `RemoteControl.Protocol.ClientMessage` / `ServerMessage`.
 
 Property names are camelCase; the `type` field is the tagged-union
 discriminator; enum values are lowercase.

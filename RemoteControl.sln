@@ -35,6 +35,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LoopbackHarness", "tools\Lo
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LossyProxy", "tools\LossyProxy\LossyProxy.csproj", "{1C452E81-330B-47B3-83BE-911B645BF377}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RemoteControl.SignalingServer", "src\RemoteControl.SignalingServer\RemoteControl.SignalingServer.csproj", "{D7D4DCCA-53B2-4006-85AD-B52BC07CA60F}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -201,6 +203,18 @@ Global
 		{1C452E81-330B-47B3-83BE-911B645BF377}.Release|x64.Build.0 = Release|Any CPU
 		{1C452E81-330B-47B3-83BE-911B645BF377}.Release|x86.ActiveCfg = Release|Any CPU
 		{1C452E81-330B-47B3-83BE-911B645BF377}.Release|x86.Build.0 = Release|Any CPU
+		{D7D4DCCA-53B2-4006-85AD-B52BC07CA60F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D7D4DCCA-53B2-4006-85AD-B52BC07CA60F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D7D4DCCA-53B2-4006-85AD-B52BC07CA60F}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{D7D4DCCA-53B2-4006-85AD-B52BC07CA60F}.Debug|x64.Build.0 = Debug|Any CPU
+		{D7D4DCCA-53B2-4006-85AD-B52BC07CA60F}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{D7D4DCCA-53B2-4006-85AD-B52BC07CA60F}.Debug|x86.Build.0 = Debug|Any CPU
+		{D7D4DCCA-53B2-4006-85AD-B52BC07CA60F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D7D4DCCA-53B2-4006-85AD-B52BC07CA60F}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D7D4DCCA-53B2-4006-85AD-B52BC07CA60F}.Release|x64.ActiveCfg = Release|Any CPU
+		{D7D4DCCA-53B2-4006-85AD-B52BC07CA60F}.Release|x64.Build.0 = Release|Any CPU
+		{D7D4DCCA-53B2-4006-85AD-B52BC07CA60F}.Release|x86.ActiveCfg = Release|Any CPU
+		{D7D4DCCA-53B2-4006-85AD-B52BC07CA60F}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -219,5 +233,6 @@ Global
 		{C0DA3332-B3D1-41E3-B6C3-A78843B54BD8} = {C36222B1-14DC-483D-86E1-1E3E057FAA02}
 		{B1150B8F-F630-42DC-B94F-CAEA4ABA7ED3} = {1E4737CD-6405-4677-BA5C-6763FBADBC9B}
 		{1C452E81-330B-47B3-83BE-911B645BF377} = {1E4737CD-6405-4677-BA5C-6763FBADBC9B}
+		{D7D4DCCA-53B2-4006-85AD-B52BC07CA60F} = {C36222B1-14DC-483D-86E1-1E3E057FAA02}
 	EndGlobalSection
 EndGlobal
