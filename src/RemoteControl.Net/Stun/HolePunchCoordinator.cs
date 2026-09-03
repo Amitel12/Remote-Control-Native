@@ -26,6 +26,22 @@ public sealed class HolePunchCoordinator
     {
         _socket = socket;
         _logger = logger ?? new ConsoleLogger(nameof(HolePunchCoordinator));
+
+        // Windows-only: a UDP send to an unreachable candidate (routine here -- see
+        // ReceiveProbeAsync's catch below) queues an ICMP port-unreachable that Windows
+        // (unlike POSIX) surfaces as WSAECONNRESET on this socket's *next* receive, whichever
+        // call that turns out to be -- including a later blocking Receive() once this same
+        // socket is handed off to the video session (UdpTransport's existing-socket
+        // constructor), which has no such guard and would otherwise die on startup. This
+        // disables that translation at the source instead of catching it at every downstream
+        // call site. Found via a real two-machine run: the host's probes to the client's own
+        // inactive VPN/virtual-adapter candidates triggered it.
+        if (OperatingSystem.IsWindows())
+        {
+            const int SioUdpConnReset = -1744830452; // 0x9800000C, undocumented in IOControlCode but standard practice
+            try { socket.IOControl(SioUdpConnReset, [0, 0, 0, 0], null); }
+            catch (SocketException) { /* best-effort -- not fatal if unsupported */ }
+        }
     }
 
     /// <summary>
