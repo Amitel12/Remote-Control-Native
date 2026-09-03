@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Net;
+using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Windows;
@@ -88,16 +89,16 @@ public partial class MainWindow : Window
         }
 
         _signalingHost = host;
-        var addresses = SignaledPeerConnector.EnumerateLocalIPv4Addresses();
-        LocalAddressesDisplay.Text = addresses.Count > 0
-            ? string.Join(", ", addresses.Select(a => $"{a}:{SignalingPort}"))
+        var displayAddress = GetPrimaryLanAddress();
+        LocalAddressesDisplay.Text = displayAddress is not null
+            ? displayAddress.ToString()
             : "(no LAN address found)";
 
         _cts = new CancellationTokenSource();
         _ = host.RunAsync(_cts.Token); // fire-and-forget: errors from a single connection are logged inside, not fatal to hosting.
         SetStatus("Waiting for a peer...");
 
-        await ConnectAndStreamAsync(Role.Host, new Uri($"ws://localhost:{SignalingPort}/"), pairingCode);
+        await ConnectAndStreamAsync(Role.Host, "localhost", pairingCode);
     }
 
     private async void ConnectButton_Click(object sender, RoutedEventArgs e)
@@ -115,18 +116,22 @@ public partial class MainWindow : Window
         SetBusy(true);
         _cts = new CancellationTokenSource();
         SetStatus("Connecting...");
-        await ConnectAndStreamAsync(Role.Client, new Uri($"ws://{hostAddress}:{SignalingPort}/"), pairingCode);
+        await ConnectAndStreamAsync(Role.Client, hostAddress, pairingCode);
     }
 
     /// <summary>
     /// Runs on the WPF dispatcher thread throughout -- every await resumes here, which keeps the
     /// UI responsive during the (deliberately unbounded) wait for a peer to join. The pipeline
-    /// itself never runs on this thread; only the signaling handshake does.
+    /// itself never runs on this thread; only the signaling handshake does. Everything that can
+    /// fail on bad user input (a mistyped address, a stray port pasted alongside it, garbage in
+    /// the STUN field) lives inside this one try block so it ends up as a status message and a
+    /// log line instead of an unhandled exception on the UI thread.
     /// </summary>
-    private async Task ConnectAndStreamAsync(Role role, Uri signalingUri, string pairingCode)
+    private async Task ConnectAndStreamAsync(Role role, string hostAddressInput, string pairingCode)
     {
         try
         {
+            var signalingUri = new Uri($"ws://{SanitizeHostAddress(hostAddressInput)}:{SignalingPort}/");
             var stunServer = ParseEndpoint(StunServerBox.Text, "STUN server");
 
             var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp)
@@ -157,16 +162,52 @@ public partial class MainWindow : Window
         }
         catch (OperationCanceledException)
         {
-            SetStatus("Cancelled.");
-            ReturnToIdle();
+            ReturnToIdle("Cancelled.");
+        }
+        catch (Exception ex) when (ex is UriFormatException or ArgumentException or SocketException)
+        {
+            // The three failure modes bad user input actually produces: an address that won't
+            // even parse into a URI, a STUN/host field that isn't host:port, or a DNS lookup that
+            // came back empty. Worth a distinct, non-scary message from the catch-all below.
+            _logger.Warn($"Could not connect: {ex.Message}");
+            ReturnToIdle("Check the host address and try again.");
         }
         catch (Exception ex)
         {
             _logger.Error("Connection failed.", ex);
-            SetStatus("Connection failed (see log).");
-            ReturnToIdle();
+            ReturnToIdle("Connection failed (see log).");
         }
     }
+
+    /// <summary>
+    /// Forgiving of the mistakes this field invites: a trailing ":port" (every address already
+    /// implies port 7777), stray whitespace, or -- if someone pastes the whole "Others connect
+    /// to" line instead of one address -- everything after the first comma.
+    /// </summary>
+    private static string SanitizeHostAddress(string input)
+    {
+        var host = input.Split(',')[0].Trim();
+        var colonIndex = host.LastIndexOf(':');
+        if (colonIndex > 0 && int.TryParse(host[(colonIndex + 1)..], out _))
+            host = host[..colonIndex];
+        return host;
+    }
+
+    /// <summary>
+    /// The one address worth reading off to a client on another machine: real LAN/Wi-Fi
+    /// adapters have a default gateway, host-only virtual switches (Hyper-V's "Default Switch",
+    /// WSL's vEthernet) generally don't -- and those virtual addresses are exactly what showed up
+    /// first when this listed every adapter, unreachable from any real second machine.
+    /// </summary>
+    private static IPAddress? GetPrimaryLanAddress() =>
+        NetworkInterface.GetAllNetworkInterfaces()
+            .Where(nic => nic.OperationalStatus == OperationalStatus.Up
+                          && nic.NetworkInterfaceType != NetworkInterfaceType.Loopback
+                          && nic.GetIPProperties().GatewayAddresses.Any(g => g.Address.AddressFamily == AddressFamily.InterNetwork))
+            .SelectMany(nic => nic.GetIPProperties().UnicastAddresses)
+            .Select(u => u.Address)
+            .FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork)
+        ?? SignaledPeerConnector.EnumerateLocalIPv4Addresses().FirstOrDefault();
 
     private void StartSessionThread(Role role, PeerConnection connection, SessionOptions options)
     {
@@ -217,10 +258,10 @@ public partial class MainWindow : Window
         StopButton.IsEnabled = false;
     }
 
-    private void ReturnToIdle()
+    private void ReturnToIdle(string status = "Idle")
     {
         SetBusy(false);
-        SetStatus("Idle");
+        SetStatus(status);
         PairingCodeDisplay.Text = "";
         LocalAddressesDisplay.Text = "";
         _signalingHost?.Dispose();

@@ -19,8 +19,13 @@ public partial class App : Application
         {
             WriteCrashLog(args.Exception);
             MessageBox.Show(
-                $"Remote Control hit an unexpected error and needs to close.\n\n{args.Exception.Message}\n\nDetails were written to:\n{LogPath}",
+                $"Remote Control hit an unexpected error.\n\n{args.Exception.Message}\n\nDetails were written to:\n{LogPath}",
                 "Remote Control", MessageBoxButton.OK, MessageBoxImage.Error);
+            // A click handler throwing (a bad address, an unexpected null) shouldn't take the
+            // whole app down -- show it, log it, keep the window open. This is a backstop, not a
+            // substitute for handling specific failures where they happen (see
+            // MainWindow.ConnectAndStreamAsync's own catches).
+            args.Handled = true;
         };
         AppDomain.CurrentDomain.UnhandledException += (_, args) =>
         {
