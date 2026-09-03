@@ -33,13 +33,13 @@
                 <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
-            <TextBlock Text="Pairing code" Grid.Row="0" Grid.Column="0" VerticalAlignment="Center" Margin="0,4,8,4" />
-            <TextBox x:Name="PairingCodeDisplay" Grid.Row="0" Grid.Column="1" IsReadOnly="True"
-                     FontFamily="Consolas" FontSize="18" Margin="0,4" Padding="4" />
-
-            <TextBlock Text="Others connect to" Grid.Row="1" Grid.Column="0" VerticalAlignment="Center" Margin="0,4,8,4" />
-            <TextBox x:Name="LocalAddressesDisplay" Grid.Row="1" Grid.Column="1" IsReadOnly="True"
+            <TextBlock Text="Host IP" Grid.Row="0" Grid.Column="0" VerticalAlignment="Center" Margin="0,4,8,4" />
+            <TextBox x:Name="LocalAddressesDisplay" Grid.Row="0" Grid.Column="1" IsReadOnly="True"
                      Margin="0,4" Padding="4" TextWrapping="Wrap" />
+
+            <TextBlock Text="Pairing code" Grid.Row="1" Grid.Column="0" VerticalAlignment="Center" Margin="0,4,8,4" />
+            <TextBox x:Name="PairingCodeDisplay" Grid.Row="1" Grid.Column="1" IsReadOnly="True"
+                     FontFamily="Consolas" FontSize="18" Margin="0,4" Padding="4" />
 
             <Button x:Name="StartHostButton" Content="Start Hosting" Grid.Row="2" Grid.Column="1"
                     HorizontalAlignment="Left" Padding="16,6" Margin="0,8,0,0" Click="StartHostButton_Click" />

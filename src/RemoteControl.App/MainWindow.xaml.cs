@@ -316,7 +316,12 @@ public partial class MainWindow : Window
             finally
             {
                 connection.Transport.Dispose();
-                Dispatcher.BeginInvoke(ReturnToIdle);
+                // Not Dispatcher.BeginInvoke(ReturnToIdle): ReturnToIdle has an optional parameter,
+                // and passing the bare method group to an overloaded Delegate-accepting API doesn't
+                // reliably collapse the default value -- confirmed crashing with
+                // TargetParameterCountException on a real run. A lambda calling it normally always
+                // supplies the default the ordinary way.
+                Dispatcher.BeginInvoke(() => ReturnToIdle());
             }
         })
         { IsBackground = true, Name = "rc-session" };
