@@ -15,6 +15,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Vortice.MediaFoundation" Version="3.8.3" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\RemoteControl.Capture\RemoteControl.Capture.csproj" />
     <ProjectReference Include="..\RemoteControl.Codec\RemoteControl.Codec.csproj" />
     <ProjectReference Include="..\RemoteControl.Render\RemoteControl.Render.csproj" />
@@ -23,6 +27,8 @@
     <ProjectReference Include="..\RemoteControl.Signaling\RemoteControl.Signaling.csproj" />
     <ProjectReference Include="..\RemoteControl.Protocol\RemoteControl.Protocol.csproj" />
     <ProjectReference Include="..\RemoteControl.Common\RemoteControl.Common.csproj" />
+    <ProjectReference Include="..\RemoteControl.Session\RemoteControl.Session.csproj" />
+    <ProjectReference Include="..\RemoteControl.SignalingServer\RemoteControl.SignalingServer.csproj" />
   </ItemGroup>
 
 </Project>

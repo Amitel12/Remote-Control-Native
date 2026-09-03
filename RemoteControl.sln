@@ -37,6 +37,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LossyProxy", "tools\LossyPr
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RemoteControl.SignalingServer", "src\RemoteControl.SignalingServer\RemoteControl.SignalingServer.csproj", "{D7D4DCCA-53B2-4006-85AD-B52BC07CA60F}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RemoteControl.Session", "src\RemoteControl.Session\RemoteControl.Session.csproj", "{FDE46267-77BF-4593-977D-68B13A8B8FB8}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -215,6 +217,18 @@ Global
 		{D7D4DCCA-53B2-4006-85AD-B52BC07CA60F}.Release|x64.Build.0 = Release|Any CPU
 		{D7D4DCCA-53B2-4006-85AD-B52BC07CA60F}.Release|x86.ActiveCfg = Release|Any CPU
 		{D7D4DCCA-53B2-4006-85AD-B52BC07CA60F}.Release|x86.Build.0 = Release|Any CPU
+		{FDE46267-77BF-4593-977D-68B13A8B8FB8}.Debug|Any CPU.ActiveCfg = Debug|x64
+		{FDE46267-77BF-4593-977D-68B13A8B8FB8}.Debug|Any CPU.Build.0 = Debug|x64
+		{FDE46267-77BF-4593-977D-68B13A8B8FB8}.Debug|x64.ActiveCfg = Debug|x64
+		{FDE46267-77BF-4593-977D-68B13A8B8FB8}.Debug|x64.Build.0 = Debug|x64
+		{FDE46267-77BF-4593-977D-68B13A8B8FB8}.Debug|x86.ActiveCfg = Debug|x64
+		{FDE46267-77BF-4593-977D-68B13A8B8FB8}.Debug|x86.Build.0 = Debug|x64
+		{FDE46267-77BF-4593-977D-68B13A8B8FB8}.Release|Any CPU.ActiveCfg = Release|x64
+		{FDE46267-77BF-4593-977D-68B13A8B8FB8}.Release|Any CPU.Build.0 = Release|x64
+		{FDE46267-77BF-4593-977D-68B13A8B8FB8}.Release|x64.ActiveCfg = Release|x64
+		{FDE46267-77BF-4593-977D-68B13A8B8FB8}.Release|x64.Build.0 = Release|x64
+		{FDE46267-77BF-4593-977D-68B13A8B8FB8}.Release|x86.ActiveCfg = Release|x64
+		{FDE46267-77BF-4593-977D-68B13A8B8FB8}.Release|x86.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -234,5 +248,6 @@ Global
 		{B1150B8F-F630-42DC-B94F-CAEA4ABA7ED3} = {1E4737CD-6405-4677-BA5C-6763FBADBC9B}
 		{1C452E81-330B-47B3-83BE-911B645BF377} = {1E4737CD-6405-4677-BA5C-6763FBADBC9B}
 		{D7D4DCCA-53B2-4006-85AD-B52BC07CA60F} = {C36222B1-14DC-483D-86E1-1E3E057FAA02}
+		{FDE46267-77BF-4593-977D-68B13A8B8FB8} = {C36222B1-14DC-483D-86E1-1E3E057FAA02}
 	EndGlobalSection
 EndGlobal

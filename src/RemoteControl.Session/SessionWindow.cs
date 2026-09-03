@@ -2,9 +2,9 @@ using System.Drawing;
 using System.Windows.Forms;
 using RemoteControl.Capture;
 
-namespace RemoteControl.Tools.LoopbackHarness;
+namespace RemoteControl.Session;
 
-internal sealed class PresentationWindow : IDisposable
+public sealed class SessionWindow : IDisposable
 {
     private readonly Form _form;
     private Size? _pendingClientSize;
@@ -14,7 +14,7 @@ internal sealed class PresentationWindow : IDisposable
     public uint ClientWidth => (uint)Math.Max(_form.ClientSize.Width, 0);
     public uint ClientHeight => (uint)Math.Max(_form.ClientSize.Height, 0);
 
-    public PresentationWindow(DisplayInfo display, string? title = null)
+    public SessionWindow(DisplayInfo display, string? title = null)
     {
         var width = Math.Min(1280, Math.Max(640, display.Width - 120));
         var height = Math.Min(720, Math.Max(360, display.Height - 160));

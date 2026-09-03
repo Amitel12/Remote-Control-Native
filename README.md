@@ -54,14 +54,17 @@ What's implemented now:
   input demos. **`tools/LossyProxy`** -- a real impairing UDP relay (bursty
   loss, reordering, jitter) used to validate FEC and the decode path.
 
-Standing between this and a usable app: one session against a deployed
-`src/RemoteControl.SignalingServer` and a real coturn instance -- the
-automated candidate exchange and the TURN relay fallback are both written
-and tested against fakes, and neither has met the real thing (the
-signaling server itself has passed a real-WebSocket smoke test, but not an
-actual two-machine run). `RemoteControl.App` (WPF) is still a placeholder;
-nothing above runs through it yet. See `docs/ARCHITECTURE.md`'s "Next step"
-for the full ordered list.
+**`RemoteControl.App` (WPF) is now a real host/client control panel**, not a
+placeholder: it starts `src/RemoteControl.SignalingServer` in-process on the
+host, generates a pairing code, and drives `SignaledPeerConnector` on both
+ends so a LAN link, a hole-punched P2P link, and a TURN relay are all tried
+automatically -- the user never picks one. Video and remote input stream
+through the session layer lifted into `src/RemoteControl.Session` (see
+`docs/PHASE-5.md`), rendered in a separate session window rather than
+embedded in the WPF shell. TURN fallback is wired the same way the harness
+always used it, but has still only been proven against fakes and a manual
+P2P run (see `docs/PHASE-2.md`) -- a real coturn instance is still item 3 on
+`docs/ARCHITECTURE.md`'s "Next step" list.
 
 ## Building
 
@@ -102,9 +105,22 @@ lands under an `x64` path rather than the default one:
 `dotnet run --project src\RemoteControl.App` needs the platform passed
 explicitly to match, i.e. `-p:Platform=x64`.
 
-The WPF shell is still a placeholder. Run the proven pipeline, LAN and P2P
-modes through `tools/LoopbackHarness`; see `docs/PHASE-0.md` through
-`docs/PHASE-4.md`.
+On the host PC, click **Start Hosting** and read out the pairing code and
+"others connect to" address. On the client, pick **Connect to a PC**, enter
+that address and code, and click **Connect**. First run on a machine that
+has never hosted before will likely hit Windows' HTTP.sys permission check
+(`HttpListenerException`, access denied) -- the app falls back to
+localhost-only and logs the one-time fix:
+`netsh http add urlacl url=http://+:7777/ user=Everyone` (run elevated,
+once per machine). A published self-contained exe:
+
+```
+dotnet publish src\RemoteControl.App -c Release -r win-x64 -p:Platform=x64 --self-contained true -p:PublishSingleFile=true
+```
+
+For lower-level manual testing (no signaling, explicit LAN/P2P mode
+selection, loss/FEC simulation), `tools/LoopbackHarness` still exposes every
+flag directly; see `docs/PHASE-0.md` through `docs/PHASE-5.md`.
 
 `src/RemoteControl.SignalingServer` runs cross-platform (`dotnet run
 --project src/RemoteControl.SignalingServer`). It binds all interfaces

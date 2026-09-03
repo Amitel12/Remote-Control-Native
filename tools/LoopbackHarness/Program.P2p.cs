@@ -5,6 +5,7 @@ using RemoteControl.Net.Peering;
 using RemoteControl.Net.Stun;
 using RemoteControl.Net.Transport;
 using RemoteControl.Protocol;
+using RemoteControl.Session;
 using RemoteControl.Signaling;
 
 namespace RemoteControl.Tools.LoopbackHarness;
@@ -21,7 +22,7 @@ namespace RemoteControl.Tools.LoopbackHarness;
 /// the failed punch attempts in docs/PHASE-2.md were stale or mistyped
 /// candidates, not NAT behaviour. Once <see cref="HolePunchCoordinator"/> opens the path, this
 /// hands the exact same socket into the Phase 1 host/client session code
-/// (<see cref="RunLanHostWithTransport"/>/<see cref="RunLanClientSession"/>)
+/// (<see cref="RemoteControl.Session.HostSession"/>/<see cref="RemoteControl.Session.ClientSession"/>)
 /// -- streaming itself doesn't care whether the transport arrived via a
 /// known LAN IP or a hole-punched NAT mapping.
 /// </summary>
@@ -60,7 +61,18 @@ internal static partial class Program
         // The host half streams to one fixed peer, so it connects -- on the relay path that is a
         // no-op, since the transport is already pointed at the relay.
         connection.Transport.Connect(connection.PeerEndpoint);
-        RunLanHostWithTransport(logger, connection.Transport, connection.Describe(), targetFrames, parityPercent, dropPercent, adaptiveBitrate, adaptiveFec, intraRefresh, remoteInput);
+        using var cts = CreateCancelKeySource();
+        var options = new SessionOptions
+        {
+            TargetFrames = targetFrames,
+            ParityPercent = parityPercent,
+            DropPercent = dropPercent,
+            AdaptiveBitrate = adaptiveBitrate,
+            AdaptiveFec = adaptiveFec,
+            IntraRefresh = intraRefresh,
+            RemoteInput = remoteInput,
+        };
+        HostSession.Run(logger, connection.Transport, connection.Describe(), options, onStats: null, cts.Token);
     }
 
     private static void RunP2pClient(
@@ -76,7 +88,15 @@ internal static partial class Program
         var connection = EstablishPeerConnectionAsync(logger, rawSocket, stunServer, remoteCandidate, signaling, turn, Role.Client)
             .GetAwaiter().GetResult();
         logger.Info($"Peer reachable via {connection.Describe()} -- entering the normal LAN client session (video streaming is identical either way).");
-        RunLanClientSession(logger, connection.Transport, targetFrames, verifyFrame, remoteInput, dropInputPercent);
+        using var cts = CreateCancelKeySource();
+        var options = new SessionOptions
+        {
+            TargetFrames = targetFrames,
+            VerifyFrame = verifyFrame,
+            RemoteInput = remoteInput,
+            DropInputPercent = dropInputPercent,
+        };
+        ClientSession.Run(logger, connection.Transport, options, onStats: null, cts.Token);
     }
 
     /// <summary>

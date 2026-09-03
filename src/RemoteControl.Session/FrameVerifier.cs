@@ -3,7 +3,7 @@ using System.Drawing.Imaging;
 using Vortice.Direct3D11;
 using Vortice.DXGI;
 
-namespace RemoteControl.Tools.LoopbackHarness;
+namespace RemoteControl.Session;
 
 /// <summary>
 /// One-off correctness check (docs/PHASE-0.md's first exit-criterion

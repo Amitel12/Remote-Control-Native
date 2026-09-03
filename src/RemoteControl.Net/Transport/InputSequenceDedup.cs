@@ -1,4 +1,4 @@
-namespace RemoteControl.Tools.LoopbackHarness;
+namespace RemoteControl.Net.Transport;
 
 /// <summary>
 /// Dedups redundant copies of the same input event (docs/PHASE-3.md) by
@@ -14,7 +14,7 @@ namespace RemoteControl.Tools.LoopbackHarness;
 /// matched the predicted cost of this exact bug almost exactly). This
 /// class only rejects a sequence number it has genuinely already accepted.
 /// </summary>
-internal sealed class InputSequenceDedup
+public sealed class InputSequenceDedup
 {
     private readonly int _capacity;
     private readonly HashSet<uint> _seen;

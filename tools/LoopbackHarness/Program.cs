@@ -4,6 +4,7 @@ using RemoteControl.Capture;
 using RemoteControl.Codec;
 using RemoteControl.Common;
 using RemoteControl.Render;
+using RemoteControl.Session;
 using Vortice.Direct3D11;
 using CodecColorConverter = RemoteControl.Codec.ColorConverter;
 
@@ -264,7 +265,7 @@ internal static partial class Program
         if ((duplicator.Width & 1) != 0 || (duplicator.Height & 1) != 0)
             throw new NotSupportedException($"NV12 requires even dimensions; selected output is {duplicator.Width}x{duplicator.Height}.");
 
-        using var window = new PresentationWindow(presentationDisplay);
+        using var window = new SessionWindow(presentationDisplay);
         using var presenter = new SwapChainPresenter(
             mfDevice.Device,
             mfDevice.ImmediateContext,

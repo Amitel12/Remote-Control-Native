@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The session layer lifted out of tools/LoopbackHarness (docs/ARCHITECTURE.md
+    Phase 5 prerequisite): the LAN host/client frame loops and the video
+    reassembly/decode/present session, driven by an already-connected
+    IUdpTransport. Windows-only (WinForms session window, D3D11/NVENC).
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Platforms>x64</Platforms>
+    <UseWindowsForms>true</UseWindowsForms>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- FrameVerifier.cs only: one-off NV12-to-PNG CPU readback for the VerifyFrame diagnostic. -->
+    <PackageReference Include="System.Drawing.Common" Version="8.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\RemoteControl.Capture\RemoteControl.Capture.csproj" />
+    <ProjectReference Include="..\RemoteControl.Codec\RemoteControl.Codec.csproj" />
+    <ProjectReference Include="..\RemoteControl.Common\RemoteControl.Common.csproj" />
+    <ProjectReference Include="..\RemoteControl.Input\RemoteControl.Input.csproj" />
+    <ProjectReference Include="..\RemoteControl.Net\RemoteControl.Net.csproj" />
+    <ProjectReference Include="..\RemoteControl.Protocol\RemoteControl.Protocol.csproj" />
+    <ProjectReference Include="..\RemoteControl.Render\RemoteControl.Render.csproj" />
+  </ItemGroup>
+
+</Project>

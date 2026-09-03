@@ -447,7 +447,12 @@ public sealed class SignaledPeerConnector
         return null;
     }
 
-    private static IReadOnlyList<IPAddress> EnumerateLocalIPv4Addresses() =>
+    /// <summary>
+    /// Every operational non-loopback IPv4 address on this machine -- the same host-candidate
+    /// source used during signaling, exposed for callers (e.g. a host UI) that want to show the
+    /// user something to read off before a peer has connected.
+    /// </summary>
+    public static IReadOnlyList<IPAddress> EnumerateLocalIPv4Addresses() =>
         NetworkInterface.GetAllNetworkInterfaces()
             .Where(nic => nic.OperationalStatus == OperationalStatus.Up
                           && nic.NetworkInterfaceType != NetworkInterfaceType.Loopback)

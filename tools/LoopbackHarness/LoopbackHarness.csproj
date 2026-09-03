@@ -28,6 +28,7 @@
     <ProjectReference Include="..\..\src\RemoteControl.Input\RemoteControl.Input.csproj" />
     <ProjectReference Include="..\..\src\RemoteControl.Protocol\RemoteControl.Protocol.csproj" />
     <ProjectReference Include="..\..\src\RemoteControl.Signaling\RemoteControl.Signaling.csproj" />
+    <ProjectReference Include="..\..\src\RemoteControl.Session\RemoteControl.Session.csproj" />
   </ItemGroup>
 
   <ItemGroup>
