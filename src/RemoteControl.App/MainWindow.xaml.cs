@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
+using System.Net.WebSockets;
 using System.Security.Cryptography;
 using System.Windows;
 using System.Windows.Threading;
@@ -164,12 +165,16 @@ public partial class MainWindow : Window
         {
             ReturnToIdle("Cancelled.");
         }
-        catch (Exception ex) when (ex is UriFormatException or ArgumentException or SocketException)
+        catch (Exception ex) when (ex is UriFormatException or ArgumentException or SocketException or WebSocketException)
         {
-            // The three failure modes bad user input actually produces: an address that won't
-            // even parse into a URI, a STUN/host field that isn't host:port, or a DNS lookup that
-            // came back empty. Worth a distinct, non-scary message from the catch-all below.
-            _logger.Warn($"Could not connect: {ex.Message}");
+            // The failure modes bad user input actually produces: an address that won't even
+            // parse into a URI, a STUN/host field that isn't host:port, a DNS lookup that came
+            // back empty, or -- the most common in practice -- ClientWebSocket wrapping exactly
+            // that same DNS failure one level up when the *host* address doesn't resolve. Worth a
+            // distinct, non-scary message from the catch-all below, and worth surfacing the inner
+            // exception's message since that's where "No such host is known" actually lives.
+            var detail = ex.InnerException?.InnerException?.Message ?? ex.InnerException?.Message ?? ex.Message;
+            _logger.Warn($"Could not connect: {detail}");
             ReturnToIdle("Check the host address and try again.");
         }
         catch (Exception ex)
