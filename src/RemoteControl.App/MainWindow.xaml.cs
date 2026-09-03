@@ -1,9 +1,11 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Net.WebSockets;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Windows;
 using System.Windows.Threading;
@@ -46,6 +48,20 @@ public partial class MainWindow : Window
         _uiTimer.Start();
     }
 
+    private void LogListBox_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        if (LogListBox.SelectedItems.Count == 0) return;
+        var text = string.Join(Environment.NewLine, LogListBox.SelectedItems.Cast<string>());
+        try
+        {
+            Clipboard.SetText(text);
+        }
+        catch (COMException)
+        {
+            // Another app briefly held the clipboard -- not worth bothering the user about.
+        }
+    }
+
     private void ModeRadio_Checked(object sender, RoutedEventArgs e)
     {
         if (HostPanel is null || ClientPanel is null) return; // fires once during InitializeComponent, before both exist.
@@ -61,32 +77,12 @@ public partial class MainWindow : Window
         var pairingCode = GeneratePairingCode();
         PairingCodeDisplay.Text = pairingCode;
 
-        var host = new SignalingServerHost("+", SignalingPort, _logger);
-        try
+        var host = StartSignalingServer();
+        if (host is null)
         {
-            host.Start();
-        }
-        catch (HttpListenerException)
-        {
-            // Binding every interface needs admin or a one-time URL ACL -- see
-            // SignalingServerHost.Start's remarks. Falling back to loopback keeps hosting usable
-            // for a same-PC test but only this machine can reach it until that's granted.
-            _logger.Warn("Could not bind all network interfaces -- this needs administrator rights " +
-                         "or a one-time permission. Run this once, as administrator, then try again:  " +
-                         $"netsh http add urlacl url=http://+:{SignalingPort}/ user=Everyone");
-            _logger.Warn("Falling back to this PC only (localhost) for now.");
-            host = new SignalingServerHost("localhost", SignalingPort, _logger);
-            try
-            {
-                host.Start();
-            }
-            catch (Exception ex)
-            {
-                _logger.Error("Failed to start the signaling server.", ex);
-                SetStatus("Failed to start (see log).");
-                SetBusy(false);
-                return;
-            }
+            SetStatus("Failed to start (see log).");
+            SetBusy(false);
+            return;
         }
 
         _signalingHost = host;
@@ -100,6 +96,82 @@ public partial class MainWindow : Window
         SetStatus("Waiting for a peer...");
 
         await ConnectAndStreamAsync(Role.Host, "localhost", pairingCode);
+    }
+
+    /// <summary>
+    /// Binding every network interface needs a one-time Windows permission grant (a URL ACL) the
+    /// first time this account hosts on this port -- <see cref="SignalingServerHost.Start"/>'s doc
+    /// comment has the background. Rather than just telling the user to type the netsh command
+    /// themselves, request it directly: an elevated one-shot netsh process, which surfaces the
+    /// UAC prompt Windows would show anyway. If that's declined (or fails), fall back to
+    /// localhost-only so hosting still works for a same-PC test.
+    /// </summary>
+    private SignalingServerHost? StartSignalingServer()
+    {
+        var host = new SignalingServerHost("+", SignalingPort, _logger);
+        try
+        {
+            host.Start();
+            return host;
+        }
+        catch (HttpListenerException)
+        {
+            _logger.Warn("This PC hasn't granted itself permission to accept LAN connections on " +
+                         "this port yet -- requesting it now (approve the Windows prompt).");
+            if (TryGrantUrlAcl())
+            {
+                host = new SignalingServerHost("+", SignalingPort, _logger);
+                try
+                {
+                    host.Start();
+                    _logger.Info("Permission granted -- hosting on all network interfaces.");
+                    return host;
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warn($"Still couldn't bind after granting permission: {ex.Message}");
+                }
+            }
+            else
+            {
+                _logger.Warn("Permission wasn't granted.");
+            }
+        }
+
+        _logger.Warn("Falling back to this PC only (localhost) -- only this machine can connect until permission is granted.");
+        var localOnly = new SignalingServerHost("localhost", SignalingPort, _logger);
+        try
+        {
+            localOnly.Start();
+            return localOnly;
+        }
+        catch (Exception ex)
+        {
+            _logger.Error("Failed to start the signaling server.", ex);
+            return null;
+        }
+    }
+
+    private bool TryGrantUrlAcl()
+    {
+        try
+        {
+            var startInfo = new ProcessStartInfo("netsh",
+                $"http add urlacl url=http://+:{SignalingPort}/ user=Everyone")
+            {
+                Verb = "runas",
+                UseShellExecute = true,
+                WindowStyle = ProcessWindowStyle.Hidden,
+            };
+            using var process = Process.Start(startInfo);
+            process?.WaitForExit();
+            return process?.ExitCode == 0;
+        }
+        catch (Win32Exception)
+        {
+            // The user declined the UAC prompt -- not an error, just a "no."
+            return false;
+        }
     }
 
     private async void ConnectButton_Click(object sender, RoutedEventArgs e)

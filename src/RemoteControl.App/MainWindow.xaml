@@ -89,7 +89,9 @@
         </Expander>
 
         <Border Grid.Row="4" BorderBrush="#CCC" BorderThickness="1">
-            <ListBox x:Name="LogListBox" FontFamily="Consolas" FontSize="11" />
+            <ListBox x:Name="LogListBox" FontFamily="Consolas" FontSize="11"
+                     SelectionMode="Extended" SelectionChanged="LogListBox_SelectionChanged"
+                     ToolTip="Click a line (or drag to select several) to copy it" />
         </Border>
     </Grid>
 </Window>
