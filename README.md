@@ -29,9 +29,10 @@ What's implemented now:
 - **`RemoteControl.Net`** -- Reed-Solomon FEC over GF(256) (the single
   highest-risk piece in the whole rewrite -- see the risk register),
   video packetizer/depacketizer, STUN client (RFC 5389, verified against
-  a real RFC 5769 reference vector), UDP hole-punch coordinator, AIMD
-  congestion controller, jitter-buffer frame pacer, and LAN-session
-  framing. Its tests include exhaustive K-of-N FEC reconstruction and a
+  a real RFC 5769 reference vector), UDP hole-punch coordinator, a TURN
+  client and relay transport (RFC 5766) for the networks punching cannot
+  cross, AIMD congestion controller, jitter-buffer frame pacer, and
+  LAN-session framing. Its tests include exhaustive K-of-N FEC reconstruction and a
   real UDP loopback STUN round trip.
 - **`RemoteControl.Signaling`** -- WebSocket client speaking the updated
   signaling protocol against `amitel12/tests`'s (unchanged) signaling
@@ -52,10 +53,11 @@ What's implemented now:
   input demos. **`tools/LossyProxy`** -- a real impairing UDP relay (bursty
   loss, reordering, jitter) used to validate FEC and the decode path.
 
-Standing between this and a usable app: a deployed signaling server to run
-the now-automated candidate exchange against, and TURN relay fallback (a
-real restrictive NAT has been found where direct punching cannot succeed --
-see `docs/PHASE-2.md`). `RemoteControl.App` (WPF) is still a placeholder;
+Standing between this and a usable app: one session against a deployed
+`deploy/docker-compose.yml` from `amitel12/tests`, which runs both the
+signaling server and coturn -- the automated candidate exchange and the TURN
+relay fallback are both written and tested against fakes, and neither has
+met the real thing. `RemoteControl.App` (WPF) is still a placeholder;
 nothing above runs through it yet. See `docs/ARCHITECTURE.md`'s "Next step"
 for the full ordered list.
 

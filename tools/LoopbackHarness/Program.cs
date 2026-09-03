@@ -90,9 +90,10 @@ internal static partial class Program
                 RunP2pHost(
                     logger,
                     ParseListenPort(p2pHostPort),
-                    ParseStunServer(ReadOption(args, "--stun-server") ?? "stun.l.google.com:19302"),
+                    ParseServerEndpoint(ReadOption(args, "--stun-server") ?? "stun.l.google.com:19302"),
                     ReadRemoteCandidate(args),
                     ReadSignalingOptions(args),
+                    ReadTurnCredentials(args),
                     ReadFrameTarget(args),
                     ReadPercentOption(args, "--parity-percent", defaultValue: 0),
                     ReadPercentOption(args, "--drop-percent", defaultValue: 0),
@@ -106,9 +107,10 @@ internal static partial class Program
                 RunP2pClient(
                     logger,
                     ParseListenPort(p2pClientPort),
-                    ParseStunServer(ReadOption(args, "--stun-server") ?? "stun.l.google.com:19302"),
+                    ParseServerEndpoint(ReadOption(args, "--stun-server") ?? "stun.l.google.com:19302"),
                     ReadRemoteCandidate(args),
                     ReadSignalingOptions(args),
+                    ReadTurnCredentials(args),
                     ReadFrameTarget(args),
                     verifyFrame: !args.Contains("--no-verify-frame"),
                     remoteInput: args.Contains("--remote-input"),
